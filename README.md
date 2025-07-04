@@ -32,7 +32,6 @@ porter-backend/
 ├── .env              # Environment variables (not committed)
 └── server.js         # Main Express server + Socket.IO
 
-
 ## 🛠 Setup Instructions
 
 1. Clone the repo and install dependencies:
