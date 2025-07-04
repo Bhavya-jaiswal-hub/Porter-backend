@@ -22,12 +22,15 @@ A full-stack logistics backend powered by **Node.js**, **Express**, **MongoDB**,
 ## 📁 Project Structure
 
 porter-backend/
-├── routes/             # All API routes
-├── models/             # Mongoose models
-├── controllers/        # Route logic (optional modularity)
-├── public/             # Static files for frontend
-├── server.js           # Entry point with Socket.IO + Express
-├── .env                # Environment variables
+├── routes/
+│   ├── authRoutes.js
+│   ├── vehicleRoutes.js
+│   ├── bookingRoutes.js
+│   ├── paymentRoutes.js
+│   └── adminRoutes.js
+├── public/           # Static frontend files (HTML/CSS)
+├── .env              # Environment variables (not committed)
+└── server.js         # Main Express server + Socket.IO
 
 
 ## 🛠 Setup Instructions
