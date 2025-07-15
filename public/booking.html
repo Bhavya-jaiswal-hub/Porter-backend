@@ -3,10 +3,11 @@
 <head>
   <title>Porter Payment</title>
   <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+  <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
 </head>
 <body>
   <button id="payBtn">Book Now & Pay ₹500</button>
-
+  <h2 id="statusDisplay">Booking Status: Pending</h2>
   <script>
     document.getElementById("payBtn").onclick = async function () {
       const res = await fetch("http://localhost:8080/payments/create-order", {
@@ -38,6 +39,19 @@
       const razor = new Razorpay(options);
       razor.open();
     };
+
+    const statusDisplay = document.getElementById("statusDisplay");
+    const socket = io("http://localhost:8080");
+
+    socket.on("connect", () => {
+      console.log("Connected to server");
+      socket.emit("startTracking", { bookingId: "12345" });
+    });
+
+    socket.on("statusUpdate", ({ bookingId, status }) => {
+      console.log(`Booking ${bookingId} status: ${status}`);
+      statusDisplay.innerText = "Booking Status: " + status;
+    });
   </script>
 </body>
 </html>
