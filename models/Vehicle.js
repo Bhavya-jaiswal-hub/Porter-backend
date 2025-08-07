@@ -6,4 +6,4 @@ const vehicleschema= new mongoose.Schema({
     capacity:{type:Number, requireed:true}
 });
 
-module.exports=mongoose.model('Vehicle',vehicleschema);
+module.exports = mongoose.models.Vehicle || mongoose.model('Vehicle', vehicleschema);

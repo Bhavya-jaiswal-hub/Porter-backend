@@ -2,7 +2,7 @@ const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const router = express.Router();
-const User = require("../models/User");
+const User = require('../models/User');
 
 // @route   POST /api/auth/signup
 // @desc    Register a new user (basic, no OTP here)

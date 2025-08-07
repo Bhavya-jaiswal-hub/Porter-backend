@@ -7,6 +7,12 @@ const cors = require('cors');
 const { Server } = require('socket.io');
 const path = require('path');
 
+// Models
+const RideRequest = require('./models/RideRequest');
+const Driver = require('./models/Driver');     // ✅ Added
+const User = require('./models/User');         // ✅ Added
+
+
 // Routes
 const router = require('./routes/authRoutes.js');
 const vehicleRoutes = require('./routes/vehicleRoutes');
@@ -14,6 +20,8 @@ const bookingRoutes = require('./routes/bookingRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const otpRoutes = require("./routes/otpAuth");
+const rideRequestsRoutes = require('./routes/rideRequests');
+
 
 // Define app and server
 const app = express();
@@ -34,6 +42,7 @@ app.use('/bookings', bookingRoutes);
 app.use('/payments', paymentRoutes);
 app.use('/admin', adminRoutes);
 app.use("/api/auth", otpRoutes);
+app.use('/api/ride-requests', rideRequestsRoutes);   // ✅ This one uses populate on Dr
 
 // In-memory store for available drivers
 let availableDrivers = {};
