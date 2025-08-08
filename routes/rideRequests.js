@@ -35,6 +35,7 @@ router.get('/test', (req, res) => {
 });
 
 // POST /api/ride-requests
+
 router.post('/', async (req, res) => {
   try {
     const {
@@ -42,8 +43,13 @@ router.post('/', async (req, res) => {
       pickupLocation,
       dropLocation,
       fareEstimate,
-      bookingId
+      bookingId,
+      vehicleType // <-- add this
     } = req.body;
+
+    if (!vehicleType) {
+      return res.status(400).json({ error: 'Vehicle type is required' });
+    }
 
     const ride = new RideRequest({
       userId,
@@ -51,6 +57,7 @@ router.post('/', async (req, res) => {
       dropLocation,
       fareEstimate,
       bookingId,
+      vehicleType, // <-- save it
       driverId: null, // no driver yet
     });
 
@@ -62,6 +69,7 @@ router.post('/', async (req, res) => {
     res.status(500).json({ error: 'Failed to create ride request' });
   }
 });
+
 
 
 module.exports = router;

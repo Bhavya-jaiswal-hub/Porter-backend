@@ -51,26 +51,46 @@ let availableDrivers = {};
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id);
 
-  // Receive driver's location and store
-  socket.on('driverLocation', ({ driverId, location }) => {
-    availableDrivers[driverId] = { socketId: socket.id, location };
+  // Receive driver's location & vehicle type and store
+  socket.on('driverLocation', ({ driverId, location, vehicleType }) => {
+    availableDrivers[driverId] = {
+      socketId: socket.id,
+      location,
+      vehicleType, // ✅ store the driver vehicle type
+    };
+    console.log(`Driver ${driverId} registered with vehicle: ${vehicleType}`);
   });
 
   // Receive ride request from customer
-  socket.on('rideRequest', ({ bookingId, pickupLocation }) => {
-    const nearbyDrivers = Object.entries(availableDrivers).filter(([id, driver]) => {
-      const distance = getDistance(pickupLocation, driver.location);
-      return distance <= 3;
-    });
+  socket.on('rideRequest', ({ bookingId, pickupLocation, vehicleType }) => {
+    console.log(
+      `Ride request for ${vehicleType} near`,
+      pickupLocation
+    );
+
+    // ✅ Filter by both location and matching vehicle type
+    const nearbyDrivers = Object.entries(availableDrivers).filter(
+      ([id, driver]) => {
+        const distance = getDistance(pickupLocation, driver.location);
+        return (
+          distance <= 3 &&
+          driver.vehicleType === vehicleType // match vehicle type
+        );
+      }
+    );
 
     if (nearbyDrivers.length === 0) {
       socket.emit('noDriversAvailable');
       return;
     }
 
-    // Notify nearby drivers
+    // Notify matching nearby drivers
     nearbyDrivers.forEach(([driverId, driver]) => {
-      io.to(driver.socketId).emit('newRideRequest', { bookingId, pickupLocation });
+      io.to(driver.socketId).emit('newRideRequest', {
+        bookingId,
+        pickupLocation,
+        vehicleType, // send vehicle type to driver as well
+      });
     });
 
     // Store temporary data on socket
@@ -111,7 +131,7 @@ io.on('connection', (socket) => {
   // Handle disconnect
   socket.on('disconnect', () => {
     console.log('Client disconnected:', socket.id);
-    // Optional: Remove driver from availableDrivers if needed
+    // Remove driver from availableDrivers if disconnected
     for (const [driverId, driver] of Object.entries(availableDrivers)) {
       if (driver.socketId === socket.id) {
         delete availableDrivers[driverId];
@@ -142,11 +162,13 @@ const PORT = process.env.PORT || 8080;
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => {
-    console.log("DB connected");
+    console.log('DB connected');
 
     server.on('error', (err) => {
       if (err.code === 'EADDRINUSE') {
-        console.error(`Port ${PORT} is already in use. Kill the running process or use another port.`);
+        console.error(
+          `Port ${PORT} is already in use. Kill the running process or use another port.`
+        );
         process.exit(1);
       } else {
         throw err;
@@ -157,4 +179,4 @@ mongoose
       console.log(`Server running on port ${PORT}`);
     });
   })
-  .catch((err) => console.error("MongoDB connection error:", err));
+  .catch((err) => console.error('MongoDB connection error:', err));
