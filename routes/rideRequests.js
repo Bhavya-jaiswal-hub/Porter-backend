@@ -1,16 +1,16 @@
 // routes/rideRequests.js
 const express = require('express');
 const router = express.Router();
+const mongoose = require('mongoose');
 const RideRequest = require('../models/RideRequest');
 
-// GET /api/ride-requests
-// Optionally filter by driverId
+// 🔍 GET /api/ride-requests
 router.get('/', async (req, res) => {
   try {
     console.log("GET /api/ride-requests called");
     const { driverId } = req.query;
 
-    let query = {};
+    const query = {};
     if (driverId) {
       console.log("Filtering by driverId:", driverId);
       query.driverId = driverId;
@@ -24,18 +24,18 @@ router.get('/', async (req, res) => {
     console.log("Fetched rideRequests:", rideRequests);
     res.status(200).json(rideRequests);
   } catch (error) {
-    console.error('❌ Error fetching ride requests:', error);  // <== this is the most important
+    console.error('❌ Error fetching ride requests:', error);
     res.status(500).json({ error: 'Failed to fetch ride requests' });
   }
 });
 
-
+// ✅ GET /api/ride-requests/test
 router.get('/test', (req, res) => {
   res.send("Ride request route is working");
 });
 
-// POST /api/ride-requests
-
+// 🚚 POST /api/ride-requests
+// 🚚 POST /api/ride-requests
 router.post('/', async (req, res) => {
   try {
     const {
@@ -44,32 +44,40 @@ router.post('/', async (req, res) => {
       dropLocation,
       fareEstimate,
       bookingId,
-      vehicleType // <-- add this
+      vehicleType
     } = req.body;
 
     if (!vehicleType) {
       return res.status(400).json({ error: 'Vehicle type is required' });
     }
 
+    // ✅ Updated userId validation to allow "guest"
+    let validUserId = null;
+    if (userId === 'guest') {
+      validUserId = null; // treat as anonymous
+    } else if (userId && mongoose.Types.ObjectId.isValid(userId)) {
+      validUserId = userId;
+    } else if (userId) {
+      return res.status(400).json({ error: 'Invalid userId format' });
+    }
+
     const ride = new RideRequest({
-      userId,
+      userId: validUserId, // optional and validated
       pickupLocation,
       dropLocation,
       fareEstimate,
       bookingId,
-      vehicleType, // <-- save it
-      driverId: null, // no driver yet
+      vehicleType,
+      driverId: null,
     });
 
     await ride.save();
 
     res.status(201).json({ message: 'Ride request created', ride });
   } catch (error) {
-    console.error('Error creating ride request:', error);
+    console.error('❌ Error creating ride request:', error);
     res.status(500).json({ error: 'Failed to create ride request' });
   }
 });
-
-
 
 module.exports = router;

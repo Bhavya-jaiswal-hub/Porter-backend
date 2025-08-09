@@ -3,8 +3,8 @@ const mongoose = require('mongoose');
 const rideRequestSchema = new mongoose.Schema({
   vehicleType: {
     type: String,
-    enum: ['bike', 'threeWheeler', 'truck', 'miniTruck', 'tempo'], // allowed types
-    required: true
+    enum: ['bike', 'threeWheeler', 'Truck', 'miniTruck', 'tempo','Two-Wheeler'], // allowed types
+    required: true,
   },
   pickupLocation: {
     lat: { type: Number, required: true },
@@ -19,11 +19,11 @@ const rideRequestSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true
+    required: false, // ✅ now optional for guests
   },
   driverId: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Driver', // if you have a separate driver model
+    ref: 'Driver',
     default: null,
   },
   fareEstimate: { type: Number, required: true },
