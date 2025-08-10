@@ -6,12 +6,12 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const { Server } = require('socket.io');
 const path = require('path');
+const axios = require('axios'); // For calling your GET API from socket event
 
 // Models
 const RideRequest = require('./models/RideRequest');
-const Driver = require('./models/Driver');     // ✅ Added
-const User = require('./models/User');         // ✅ Added
-
+const Driver = require('./models/Driver');
+const User = require('./models/User');
 
 // Routes
 const router = require('./routes/authRoutes.js');
@@ -21,7 +21,6 @@ const paymentRoutes = require('./routes/paymentRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const otpRoutes = require("./routes/otpAuth");
 const rideRequestsRoutes = require('./routes/rideRequests');
-
 
 // Define app and server
 const app = express();
@@ -42,109 +41,147 @@ app.use('/bookings', bookingRoutes);
 app.use('/payments', paymentRoutes);
 app.use('/admin', adminRoutes);
 app.use("/api/auth", otpRoutes);
-app.use('/api/ride-requests', rideRequestsRoutes);   // ✅ This one uses populate on Dr
+app.use('/api/ride-requests', rideRequestsRoutes);
 
 // In-memory store for available drivers
 let availableDrivers = {};
 
-// Socket.IO Logic
-io.on('connection', (socket) => {
-  console.log('Client connected:', socket.id);
+// SOCKET HANDLER
+function socketHandler(io) {
+  io.on('connection', (socket) => {
+    console.log('🔌 Client connected:', socket.id);
 
-  // Receive driver's location & vehicle type and store
-  socket.on('driverLocation', ({ driverId, location, vehicleType }) => {
-    availableDrivers[driverId] = {
-      socketId: socket.id,
-      location,
-      vehicleType, // ✅ store the driver vehicle type
-    };
-    console.log(`Driver ${driverId} registered with vehicle: ${vehicleType}`);
-  });
-
-  // Receive ride request from customer
-  socket.on('rideRequest', ({ bookingId, pickupLocation, vehicleType }) => {
-    console.log(
-      `Ride request for ${vehicleType} near`,
-      pickupLocation
-    );
-
-    // ✅ Filter by both location and matching vehicle type
-    const nearbyDrivers = Object.entries(availableDrivers).filter(
-      ([id, driver]) => {
-        const distance = getDistance(pickupLocation, driver.location);
-        return (
-          distance <= 3 &&
-          driver.vehicleType === vehicleType // match vehicle type
-        );
-      }
-    );
-
-    if (nearbyDrivers.length === 0) {
-      socket.emit('noDriversAvailable');
-      return;
-    }
-
-    // Notify matching nearby drivers
-    nearbyDrivers.forEach(([driverId, driver]) => {
-      io.to(driver.socketId).emit('newRideRequest', {
-        bookingId,
-        pickupLocation,
-        vehicleType, // send vehicle type to driver as well
-      });
-    });
-
-    // Store temporary data on socket
-    socket.bookingId = bookingId;
-    socket.rideInProgress = true;
-  });
-
-  // Driver accepts the ride
-  socket.on('acceptRide', ({ driverId, bookingId }) => {
-    // Notify customer
-    io.emit('rideAccepted', { bookingId, driverId });
-
-    // Inform other drivers
-    Object.entries(availableDrivers).forEach(([id, driver]) => {
-      if (id !== driverId) {
-        io.to(driver.socketId).emit('rideAlreadyTaken', { bookingId });
-      }
-    });
-
-    // Remove accepted driver from available pool
-    delete availableDrivers[driverId];
-  });
-
-  // Simulated status tracking (for demo/testing)
-  socket.on('startTracking', ({ bookingId }) => {
-    let status = 'enroute';
-    const interval = setInterval(() => {
-      if (status === 'enroute') status = 'arrived';
-      else if (status === 'arrived') status = 'delivered';
-      else {
-        clearInterval(interval);
+    /**
+     * DRIVER REGISTERS LOCATION & VEHICLE
+     */
+    socket.on('driverLocation', ({ driverId, location, vehicleType }) => {
+      if (!driverId || !location || !vehicleType) {
+        console.warn('⚠️ Invalid driver registration data', { driverId, location, vehicleType });
         return;
       }
-      socket.emit('statusUpdate', { bookingId, status });
-    }, 5000);
-  });
 
-  // Handle disconnect
-  socket.on('disconnect', () => {
-    console.log('Client disconnected:', socket.id);
-    // Remove driver from availableDrivers if disconnected
-    for (const [driverId, driver] of Object.entries(availableDrivers)) {
-      if (driver.socketId === socket.id) {
-        delete availableDrivers[driverId];
-        break;
+      availableDrivers[driverId] = {
+        socketId: socket.id,
+        location,
+        vehicleType,
+      };
+
+      console.log(`🚗 Driver ${driverId} registered (${vehicleType}) at`, location);
+    });
+
+    /**
+     * CUSTOMER REQUESTS RIDE (fetch details from GET API)
+     */
+    socket.on('rideRequest', async ({ bookingId }) => {
+      try {
+        console.log(`📦 Ride request received for booking ID: ${bookingId}`);
+
+        // 1️⃣ Call GET API to get ride details
+        const apiUrl = `${process.env.BASE_URL || 'http://localhost:8080'}/api/ride-requests/${bookingId}`;
+        const { data: ride } = await axios.get(apiUrl);
+
+        if (!ride) {
+          console.log('❌ Ride not found in database');
+          socket.emit('rideNotFound', { bookingId });
+          return;
+        }
+
+        const { pickupLocation, dropLocation, fareEstimate, vehicleType, userId } = ride;
+
+        console.log(`📍 Looking for ${vehicleType} drivers within 3 km of pickup...`);
+
+        // 2️⃣ Find matching nearby drivers
+        const nearbyDrivers = Object.entries(availableDrivers).filter(
+          ([id, driver]) => {
+            const distance = getDistance(pickupLocation, driver.location);
+            return distance <= 3 && driver.vehicleType === vehicleType;
+          }
+        );
+
+        if (nearbyDrivers.length === 0) {
+          console.log('🚫 No drivers available for this request');
+          socket.emit('noDriversAvailable', { bookingId });
+          return;
+        }
+
+        // 3️⃣ Send ride details to each matching driver
+        nearbyDrivers.forEach(([driverId, driver]) => {
+          io.to(driver.socketId).emit('newRideRequest', {
+            bookingId,
+            pickupLocation,
+            dropLocation,
+            fareEstimate,
+            vehicleType,
+            userId: userId?._id || null,
+            customerName: userId?.name || 'Guest',
+            customerPhone: userId?.phone || '',
+          });
+        });
+
+        // Store ride state for this customer socket
+        socket.bookingId = bookingId;
+        socket.rideInProgress = true;
+
+      } catch (err) {
+        console.error('❌ Error handling rideRequest:', err.message);
+        socket.emit('serverError', { message: 'Could not process ride request' });
       }
-    }
-  });
-});
+    });
 
-// Helper: Haversine formula to calculate distance in KM
+    /**
+     * DRIVER ACCEPTS RIDE
+     */
+    socket.on('acceptRide', ({ driverId, bookingId }) => {
+      console.log(`✅ Driver ${driverId} accepted ride ${bookingId}`);
+
+      io.emit('rideAccepted', { bookingId, driverId });
+
+      Object.entries(availableDrivers).forEach(([id, driver]) => {
+        if (id !== driverId) {
+          io.to(driver.socketId).emit('rideAlreadyTaken', { bookingId });
+        }
+      });
+
+      delete availableDrivers[driverId];
+    });
+
+    /**
+     * SIMULATED STATUS TRACKING
+     */
+    socket.on('startTracking', ({ bookingId }) => {
+      let status = 'enroute';
+      const interval = setInterval(() => {
+        if (status === 'enroute') status = 'arrived';
+        else if (status === 'arrived') status = 'delivered';
+        else {
+          clearInterval(interval);
+          return;
+        }
+        socket.emit('statusUpdate', { bookingId, status });
+      }, 5000);
+    });
+
+    /**
+     * HANDLE DISCONNECT
+     */
+    socket.on('disconnect', () => {
+      console.log('❌ Client disconnected:', socket.id);
+
+      for (const [driverId, driver] of Object.entries(availableDrivers)) {
+        if (driver.socketId === socket.id) {
+          delete availableDrivers[driverId];
+          console.log(`🗑️ Removed driver ${driverId} from available list`);
+          break;
+        }
+      }
+    });
+  });
+}
+
+// Helper: Haversine formula
 function getDistance(loc1, loc2) {
   const toRad = (val) => (val * Math.PI) / 180;
-  const R = 6371; // Radius of Earth in km
+  const R = 6371;
   const dLat = toRad(loc2.lat - loc1.lat);
   const dLon = toRad(loc2.lng - loc1.lng);
   const lat1 = toRad(loc1.lat);
@@ -166,9 +203,7 @@ mongoose
 
     server.on('error', (err) => {
       if (err.code === 'EADDRINUSE') {
-        console.error(
-          `Port ${PORT} is already in use. Kill the running process or use another port.`
-        );
+        console.error(`Port ${PORT} is already in use.`);
         process.exit(1);
       } else {
         throw err;
@@ -178,5 +213,7 @@ mongoose
     server.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
     });
+
+    socketHandler(io);
   })
   .catch((err) => console.error('MongoDB connection error:', err));

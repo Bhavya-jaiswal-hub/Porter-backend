@@ -35,7 +35,6 @@ router.get('/test', (req, res) => {
 });
 
 // 🚚 POST /api/ride-requests
-// 🚚 POST /api/ride-requests
 router.post('/', async (req, res) => {
   try {
     const {
@@ -43,41 +42,81 @@ router.post('/', async (req, res) => {
       pickupLocation,
       dropLocation,
       fareEstimate,
-      bookingId,
       vehicleType
     } = req.body;
 
+    // Validate vehicle type
     if (!vehicleType) {
       return res.status(400).json({ error: 'Vehicle type is required' });
     }
 
-    // ✅ Updated userId validation to allow "guest"
+    // Validate location addresses
+    if (!pickupLocation?.address || !dropLocation?.address) {
+      return res.status(400).json({ error: 'Pickup and drop addresses are required' });
+    }
+
+    // ✅ Handle "guest" userId
     let validUserId = null;
     if (userId === 'guest') {
-      validUserId = null; // treat as anonymous
+      validUserId = null;
     } else if (userId && mongoose.Types.ObjectId.isValid(userId)) {
       validUserId = userId;
     } else if (userId) {
       return res.status(400).json({ error: 'Invalid userId format' });
     }
 
+    // ✅ Auto-generate bookingId
+    const generatedBookingId = `RID-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+
+    // ✅ Create ride request
     const ride = new RideRequest({
-      userId: validUserId, // optional and validated
+      userId: validUserId,
       pickupLocation,
       dropLocation,
       fareEstimate,
-      bookingId,
+      bookingId: generatedBookingId, // must exist in schema
       vehicleType,
       driverId: null,
     });
 
     await ride.save();
 
-    res.status(201).json({ message: 'Ride request created', ride });
+    // ✅ Send bookingId at top level
+    res.status(201).json({
+      message: 'Ride request created',
+      bookingId: generatedBookingId,
+      ride
+    });
+
   } catch (error) {
     console.error('❌ Error creating ride request:', error);
     res.status(500).json({ error: 'Failed to create ride request' });
   }
 });
+
+
+// ✅ Get ride details by bookingId
+router.get('/:bookingId', async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+
+    if (!bookingId) {
+      return res.status(400).json({ error: 'Booking ID is required' });
+    }
+
+    const ride = await RideRequest.findOne({ bookingId });
+
+    if (!ride) {
+      return res.status(404).json({ error: 'Ride not found' });
+    }
+
+    res.status(200).json({ ride });
+  } catch (error) {
+    console.error('❌ Error fetching ride details:', error);
+    res.status(500).json({ error: 'Failed to fetch ride details' });
+  }
+});
+
+
 
 module.exports = router;

@@ -1,9 +1,14 @@
 const mongoose = require('mongoose');
 
 const rideRequestSchema = new mongoose.Schema({
+  bookingId: {
+    type: String,
+    required: true,
+    unique: true // prevents duplicate booking IDs
+  },
   vehicleType: {
     type: String,
-    enum: ['bike', 'threeWheeler', 'Truck', 'miniTruck', 'tempo','Two-Wheeler'], // allowed types
+    enum: ['bike', 'threeWheeler', 'Truck', 'miniTruck', 'tempo', 'Two-Wheeler'], // allowed types
     required: true,
   },
   pickupLocation: {
@@ -19,23 +24,23 @@ const rideRequestSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: false, // ✅ now optional for guests
+    default: null // ✅ null for guests
   },
   driverId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Driver',
-    default: null,
+    default: null
   },
   fareEstimate: { type: Number, required: true },
   status: {
     type: String,
     enum: ['searching', 'accepted', 'cancelled', 'completed'],
-    default: 'searching',
+    default: 'searching'
   },
   createdAt: {
     type: Date,
-    default: Date.now,
-  },
+    default: Date.now
+  }
 });
 
 module.exports =
