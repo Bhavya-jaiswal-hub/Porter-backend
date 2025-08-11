@@ -67,6 +67,7 @@ function socketHandler(io) {
       };
 
       console.log(`🚗 Driver ${driverId} registered (${vehicleType}) at`, location);
+      console.log('Current available drivers:', availableDrivers);
     });
 
     /**
@@ -80,23 +81,34 @@ function socketHandler(io) {
         const apiUrl = `${process.env.BASE_URL || 'http://localhost:8080'}/api/ride-requests/${bookingId}`;
         const { data: ride } = await axios.get(apiUrl);
 
-        if (!ride) {
+        console.log('Ride details fetched:', ride);
+
+        if (!ride || !ride.ride) {
           console.log('❌ Ride not found in database');
           socket.emit('rideNotFound', { bookingId });
           return;
         }
 
-        const { pickupLocation, dropLocation, fareEstimate, vehicleType, userId } = ride;
+        // Destructure from ride.ride
+        const { pickupLocation, dropLocation, fareEstimate, vehicleType, userId } = ride.ride;
+
+        console.log('Available drivers:', availableDrivers);
+        console.log('Pickup location:', pickupLocation);
+        console.log('Ride vehicleType:', vehicleType);
 
         console.log(`📍 Looking for ${vehicleType} drivers within 3 km of pickup...`);
 
         // 2️⃣ Find matching nearby drivers
-        const nearbyDrivers = Object.entries(availableDrivers).filter(
-          ([id, driver]) => {
-            const distance = getDistance(pickupLocation, driver.location);
-            return distance <= 3 && driver.vehicleType === vehicleType;
-          }
-        );
+       const nearbyDrivers = Object.entries(availableDrivers).filter(
+  ([id, driver]) => {
+    const distance = getDistance(pickupLocation, driver.location);
+    return (
+      distance <= 3 &&
+      driver.vehicleType.toLowerCase() === vehicleType.toLowerCase()
+    );
+  }
+);
+
 
         if (nearbyDrivers.length === 0) {
           console.log('🚫 No drivers available for this request');
@@ -131,19 +143,35 @@ function socketHandler(io) {
     /**
      * DRIVER ACCEPTS RIDE
      */
-    socket.on('acceptRide', ({ driverId, bookingId }) => {
-      console.log(`✅ Driver ${driverId} accepted ride ${bookingId}`);
+    socket.on('acceptRide', async ({ driverId, bookingId }) => {
+  try {
+    console.log(`✅ Driver ${driverId} accepted ride ${bookingId}`);
 
-      io.emit('rideAccepted', { bookingId, driverId });
+    // Fetch driver details from DB
+    const driver = await Driver.findOne({ driverId });
 
-      Object.entries(availableDrivers).forEach(([id, driver]) => {
-        if (id !== driverId) {
-          io.to(driver.socketId).emit('rideAlreadyTaken', { bookingId });
-        }
-      });
-
-      delete availableDrivers[driverId];
+    io.emit('rideAccepted', {
+      bookingId,
+      driverId,
+      name: driver?.name || 'Driver',
+      phone: driver?.phone || 'N/A',
     });
+
+    // Notify other drivers that ride is taken
+    Object.entries(availableDrivers).forEach(([id, driver]) => {
+      if (id !== driverId) {
+        io.to(driver.socketId).emit('rideAlreadyTaken', { bookingId });
+      }
+    });
+
+    // Remove this driver from available drivers
+    delete availableDrivers[driverId];
+  } catch (error) {
+    console.error('Error in acceptRide:', error);
+    socket.emit('serverError', { message: 'Could not process ride acceptance' });
+  }
+});
+
 
     /**
      * SIMULATED STATUS TRACKING
