@@ -143,51 +143,60 @@ function socketHandler(io) {
     /**
      * DRIVER ACCEPTS RIDE
      */
-    socket.on('acceptRide', async ({ driverId, bookingId }) => {
+  socket.on('acceptRide', async ({ driverId, bookingId }) => {
   try {
-    console.log(`✅ Driver ${driverId} accepted ride ${bookingId}`);
+    console.log("Incoming bookingId:", bookingId);
 
-    // Fetch driver details from DB
-    const driver = await Driver.findOne({ driverId });
+    // Find ride by bookingId (custom field)
+    const ride = await RideRequest.findOne({ bookingId });
+    console.log("Ride found in DB:", ride);
 
+    if (!ride) {
+      console.warn(`⚠ Ride with bookingId ${bookingId} not found in DB`);
+      return socket.emit('serverError', { message: 'Ride not found' });
+    }
+
+    console.log(`✅ Driver ${driverId || 'Unknown'} accepted ride ${bookingId}`);
+
+    // ✅ Update status and driverId (string allowed now)
+    ride.status = 'accepted';
+    ride.driverId = driverId || null;
+    await ride.save();
+
+    // Try to fetch driver details if using real DB ID
+    let driver = null;
+    if (driverId && driverId !== 'DRIVER123') {
+      driver = await Driver.findOne({ _id: driverId });
+    }
+
+    // Notify the customer
     io.emit('rideAccepted', {
       bookingId,
-      driverId,
+      driverId: driverId || null,
       name: driver?.name || 'Driver',
       phone: driver?.phone || 'N/A',
     });
 
-    // Notify other drivers that ride is taken
-    Object.entries(availableDrivers).forEach(([id, driver]) => {
+    // Notify other drivers
+    Object.entries(availableDrivers).forEach(([id, drv]) => {
       if (id !== driverId) {
-        io.to(driver.socketId).emit('rideAlreadyTaken', { bookingId });
+        io.to(drv.socketId).emit('rideAlreadyTaken', { bookingId });
       }
     });
 
-    // Remove this driver from available drivers
-    delete availableDrivers[driverId];
+    // Remove this driver from available list
+    if (driverId) {
+      delete availableDrivers[driverId];
+    }
+
   } catch (error) {
-    console.error('Error in acceptRide:', error);
+    console.error('❌ Error in acceptRide:', error);
     socket.emit('serverError', { message: 'Could not process ride acceptance' });
   }
 });
 
 
-    /**
-     * SIMULATED STATUS TRACKING
-     */
-    socket.on('startTracking', ({ bookingId }) => {
-      let status = 'enroute';
-      const interval = setInterval(() => {
-        if (status === 'enroute') status = 'arrived';
-        else if (status === 'arrived') status = 'delivered';
-        else {
-          clearInterval(interval);
-          return;
-        }
-        socket.emit('statusUpdate', { bookingId, status });
-      }, 5000);
-    });
+
 
     /**
      * HANDLE DISCONNECT

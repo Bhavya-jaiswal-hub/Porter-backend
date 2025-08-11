@@ -26,11 +26,12 @@ const rideRequestSchema = new mongoose.Schema({
     ref: 'User',
     default: null // ✅ null for guests
   },
-  driverId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Driver',
-    default: null
-  },
+driverId: {
+  type: mongoose.Schema.Types.Mixed, // can store ObjectId OR string
+  ref: 'Driver',
+  default: null
+},
+
   fareEstimate: { type: Number, required: true },
   status: {
     type: String,
