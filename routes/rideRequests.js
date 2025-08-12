@@ -1,27 +1,19 @@
-// routes/rideRequests.js
 const express = require('express');
 const router = express.Router();
-const mongoose = require('mongoose');
 const RideRequest = require('../models/RideRequest');
+const authenticateToken = require('../middlewares/authMiddleware');
 
-// 🔍 GET /api/ride-requests
+// 🔍 GET all ride requests
 router.get('/', async (req, res) => {
   try {
-    console.log("GET /api/ride-requests called");
     const { driverId } = req.query;
-
-    const query = {};
-    if (driverId) {
-      console.log("Filtering by driverId:", driverId);
-      query.driverId = driverId;
-    }
+    const query = driverId ? { driverId } : {};
 
     const rideRequests = await RideRequest.find(query)
-      .sort({ createdAt: -1 }) // latest first
-      .populate('userId', 'name email')
-      .populate('driverId', 'name email');
+      .sort({ createdAt: -1 })
+      .populate('userId', 'name email phone')
+      .populate('driverId', 'name email phone');
 
-    console.log("Fetched rideRequests:", rideRequests);
     res.status(200).json(rideRequests);
   } catch (error) {
     console.error('❌ Error fetching ride requests:', error);
@@ -29,59 +21,50 @@ router.get('/', async (req, res) => {
   }
 });
 
-// ✅ GET /api/ride-requests/test
+// ✅ Test route
 router.get('/test', (req, res) => {
   res.send("Ride request route is working");
 });
 
-// 🚚 POST /api/ride-requests
-router.post('/', async (req, res) => {
+// 🚚 POST create a ride request (Authenticated users only)
+router.post('/', authenticateToken, async (req, res) => {
   try {
     const {
-      userId,
       pickupLocation,
       dropLocation,
       fareEstimate,
       vehicleType
     } = req.body;
 
-    // Validate vehicle type
+    // Validation
     if (!vehicleType) {
       return res.status(400).json({ error: 'Vehicle type is required' });
     }
-
-    // Validate location addresses
     if (!pickupLocation?.address || !dropLocation?.address) {
       return res.status(400).json({ error: 'Pickup and drop addresses are required' });
     }
 
-    // ✅ Handle "guest" userId
-    let validUserId = null;
-    if (userId === 'guest') {
-      validUserId = null;
-    } else if (userId && mongoose.Types.ObjectId.isValid(userId)) {
-      validUserId = userId;
-    } else if (userId) {
-      return res.status(400).json({ error: 'Invalid userId format' });
+    const validUserId = req.user?._id || req.user?.id;
+    if (!validUserId) {
+      return res.status(401).json({ error: 'User authentication failed' });
     }
 
-    // ✅ Auto-generate bookingId
     const generatedBookingId = `RID-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
-    // ✅ Create ride request
     const ride = new RideRequest({
       userId: validUserId,
       pickupLocation,
       dropLocation,
       fareEstimate,
-      bookingId: generatedBookingId, // must exist in schema
+      bookingId: generatedBookingId,
       vehicleType,
       driverId: null,
     });
 
     await ride.save();
 
-    // ✅ Send bookingId at top level
+    // 🚫 Removed raw Socket.IO broadcast (handled via client emit + filtered server emit)
+
     res.status(201).json({
       message: 'Ride request created',
       bookingId: generatedBookingId,
@@ -94,8 +77,7 @@ router.post('/', async (req, res) => {
   }
 });
 
-
-// ✅ Get ride details by bookingId
+// ✅ GET ride details by bookingId
 router.get('/:bookingId', async (req, res) => {
   try {
     const { bookingId } = req.params;
@@ -104,7 +86,8 @@ router.get('/:bookingId', async (req, res) => {
       return res.status(400).json({ error: 'Booking ID is required' });
     }
 
-    const ride = await RideRequest.findOne({ bookingId });
+    const ride = await RideRequest.findOne({ bookingId })
+      .populate('userId', 'name email phone');
 
     if (!ride) {
       return res.status(404).json({ error: 'Ride not found' });
@@ -116,7 +99,5 @@ router.get('/:bookingId', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch ride details' });
   }
 });
-
-
 
 module.exports = router;
