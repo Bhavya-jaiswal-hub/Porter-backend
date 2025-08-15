@@ -1,9 +1,12 @@
+// server.js
+
 // Imports
 require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const cookieParser = require('cookie-parser');
 const { Server } = require('socket.io');
 const path = require('path');
 
@@ -11,61 +14,92 @@ const path = require('path');
 const RideRequest = require('./models/RideRequest');
 const Driver = require('./models/Driver');
 
-// Routes
-const router = require('./routes/authRoutes.js');
+// Routes (existing)
+const authRoutes = require('./routes/authRoutes.js');
 const vehicleRoutes = require('./routes/vehicleRoutes');
 const bookingRoutes = require('./routes/bookingRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 const adminRoutes = require('./routes/adminRoutes');
-const otpRoutes = require("./routes/otpAuth");
+const otpRoutes = require('./routes/otpAuth');
 const rideRequestsRoutes = require('./routes/rideRequests');
+
+// New driver routes
+const driverAuthRoutes = require('./routes/driverAuthRoutes');
+const driverOnboardingRoutes = require('./routes/driverOnboardingRoutes');
+
+// Storage bootstrap (Supabase/local)
+const STORAGE_PROVIDER = process.env.STORAGE_PROVIDER || 'local'; // 'supabase' | 'local'
+let ensureBucketExists = null;
+if (STORAGE_PROVIDER === 'supabase') {
+  ({ ensureBucketExists } = require('./services/storage/supabaseStorage'));
+}
 
 // Define app and server
 const app = express();
 const server = http.createServer(app);
+
+// CORS: allow credentials for cookie-based refresh
+const rawOrigins = (process.env.CLIENT_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
+const corsOptions = rawOrigins.length
+  ? { origin: rawOrigins, credentials: true }
+  : { origin: '*', credentials: false }; // fallback: no cookies with wildcard
+
+app.use(cors(corsOptions));
+app.use(express.json());
+app.use(cookieParser());
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Serve local uploads if using local storage
+if (STORAGE_PROVIDER === 'local') {
+  const uploadsRoot = path.join(process.cwd(), 'uploads');
+  app.use('/uploads', express.static(uploadsRoot));
+}
+
+// Socket.io (mirror CORS with HTTP)
 const io = new Server(server, {
-  cors: { origin: "*", methods: ["GET", "POST"], credentials: false },
+  cors: rawOrigins.length
+    ? { origin: rawOrigins, methods: ['GET', 'POST'], credentials: true }
+    : { origin: '*', methods: ['GET', 'POST'], credentials: false },
 });
 
-// Middleware
-app.use(cors());
-app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
-
-// Attach io for routes (we won’t broadcast from routes, but safe to keep)
-app.use((req, res, next) => {
+// Make io available in controllers
+app.set('io', io);
+app.use((req, _res, next) => {
   req.io = io;
   next();
 });
 
-// Routes
-app.use('/api/auth', router);
-app.use("/api/auth", otpRoutes);
+// ---------- API routes ----------
+app.use('/api/auth', authRoutes);
+app.use('/api/auth', otpRoutes);
 app.use('/vehicles', vehicleRoutes);
 app.use('/bookings', bookingRoutes);
 app.use('/payments', paymentRoutes);
 app.use('/admin', adminRoutes);
 app.use('/api/ride-requests', rideRequestsRoutes);
 
+// New driver auth + onboarding
+app.use('/api/driver/auth', driverAuthRoutes);
+app.use('/api/driver/onboarding', driverOnboardingRoutes);
+
 // ---------- Real-time state ----------
-const SEARCH_RADIUS_KM = Number(process.env.SEARCH_RADIUS_KM || 8); // wider radius for testing
+const SEARCH_RADIUS_KM = Number(process.env.SEARCH_RADIUS_KM || 8);
 
 // Keyed by socket.id so multiple tabs with same driverId don't overwrite each other
 let availableDrivers = {};
 
-// Helper: Haversine (km). Returns Infinity if invalid.
+
+// Haversine (km)
 function getDistance(loc1, loc2) {
   const valid = (p) => p && Number.isFinite(Number(p.lat)) && Number.isFinite(Number(p.lng));
   if (!valid(loc1) || !valid(loc2)) return Infinity;
 
-  const toRad = (val) => (Number(val) * Math.PI) / 180;
+  const toRad = (v) => (Number(v) * Math.PI) / 180;
   const R = 6371;
-
   const dLat = toRad(loc2.lat - loc1.lat);
   const dLon = toRad(loc2.lng - loc1.lng);
   const lat1 = toRad(loc1.lat);
   const lat2 = toRad(loc2.lat);
-
   const a =
     Math.sin(dLat / 2) ** 2 +
     Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
@@ -108,7 +142,6 @@ io.on('connection', (socket) => {
 
       console.log(`📦 rideRequest received for bookingId: ${bookingId}`);
 
-      // Fetch ride with customer details
       const ride = await RideRequest.findOne({ bookingId })
         .populate('userId', 'name phone email')
         .lean();
@@ -129,20 +162,12 @@ io.on('connection', (socket) => {
 
       const type = String(rawType || '').trim().toLowerCase();
 
-      // Find matching nearby drivers
       const nearbyEntries = Object.entries(availableDrivers).filter(([, drv]) => {
         const distance = getDistance(
-          {
-            lat: Number(pickupLocation?.lat),
-            lng: Number(pickupLocation?.lng),
-          },
+          { lat: Number(pickupLocation?.lat), lng: Number(pickupLocation?.lng) },
           drv.location
         );
-        return (
-          Number.isFinite(distance) &&
-          distance <= SEARCH_RADIUS_KM &&
-          drv.vehicleType === type
-        );
+        return Number.isFinite(distance) && distance <= SEARCH_RADIUS_KM && drv.vehicleType === type;
       });
 
       if (nearbyEntries.length === 0) {
@@ -151,7 +176,6 @@ io.on('connection', (socket) => {
         return;
       }
 
-      // Dispatch to each matching driver only
       nearbyEntries.forEach(([, drv]) => {
         io.to(drv.socketId).emit('new-ride-request', {
           bookingId,
@@ -165,7 +189,6 @@ io.on('connection', (socket) => {
         });
       });
 
-      // Track on customer socket (optional)
       socket.bookingId = bookingId;
       socket.rideInProgress = true;
     } catch (err) {
@@ -187,7 +210,6 @@ io.on('connection', (socket) => {
         return socket.emit('serverError', { message: 'Ride not found' });
       }
 
-      // Identify accepting driver from this socket if driverId missing
       const acceptingEntry =
         availableDrivers[socket.id] ||
         Object.values(availableDrivers).find((d) => d.driverId === driverId);
@@ -198,7 +220,6 @@ io.on('connection', (socket) => {
       ride.driverId = acceptedDriverId;
       await ride.save();
 
-      // Optional: fetch driver profile
       let driver = null;
       if (acceptedDriverId) {
         try {
@@ -206,11 +227,8 @@ io.on('connection', (socket) => {
         } catch {}
       }
 
-      console.log(
-        `✅ Driver ${acceptedDriverId || 'Unknown'} accepted ride ${bookingId}`
-      );
+      console.log(`✅ Driver ${acceptedDriverId || 'Unknown'} accepted ride ${bookingId}`);
 
-      // Notify customers (broadcast okay; clients filter by bookingId)
       io.emit('ride-confirmed', {
         bookingId,
         driverId: acceptedDriverId,
@@ -218,22 +236,17 @@ io.on('connection', (socket) => {
         driverPhone: driver?.phone || 'N/A',
       });
 
-      // Tell all other drivers to stop showing this request
       Object.entries(availableDrivers).forEach(([sid, drv]) => {
         if (sid !== socket.id) {
           io.to(drv.socketId).emit('rideAlreadyTaken', { bookingId });
         }
       });
 
-      // Remove accepting driver from available list
       if (availableDrivers[socket.id]) {
         delete availableDrivers[socket.id];
       } else if (acceptedDriverId) {
-        // Fallback cleanup if keyed by driverId (legacy)
         for (const [sid, drv] of Object.entries(availableDrivers)) {
-          if (drv.driverId === acceptedDriverId) {
-            delete availableDrivers[sid];
-          }
+          if (drv.driverId === acceptedDriverId) delete availableDrivers[sid];
         }
       }
     } catch (error) {
@@ -258,8 +271,19 @@ const PORT = process.env.PORT || 8080;
 
 mongoose
   .connect(process.env.MONGO_URI)
-  .then(() => {
+  .then(async () => {
     console.log('DB connected');
+
+    // Ensure Supabase bucket exists (if using Supabase)
+    if (STORAGE_PROVIDER === 'supabase' && typeof ensureBucketExists === 'function') {
+      try {
+        const preferSigned = String(process.env.SUPABASE_PREFER_SIGNED || 'true') === 'true';
+        await ensureBucketExists({ public: !preferSigned });
+        console.log('Supabase storage bucket is ready');
+      } catch (e) {
+        console.error('Failed to ensure Supabase bucket:', e.message || e);
+      }
+    }
 
     server.on('error', (err) => {
       if (err.code === 'EADDRINUSE') {

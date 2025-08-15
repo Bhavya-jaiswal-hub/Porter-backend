@@ -1,12 +1,31 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
 
+// 📍 Reusable location schema
 const locationSchema = new Schema({
   lat: { type: Number, required: true },
   lng: { type: Number, required: true },
 }, { _id: false });
 
+// 📄 Sub-schema for driver documents
+const documentSchema = new Schema({
+  type: {
+    type: String,
+    enum: ['license', 'rc', 'id'],
+    required: true,
+  },
+  url: { type: String, required: true },        // Supabase/public storage URL
+  status: {
+    type: String,
+    enum: ['submitted', 'approved', 'rejected'],
+    default: 'submitted',
+  },
+  notes: { type: String, default: '' },
+  uploadedAt: { type: Date, default: Date.now },
+}, { _id: false });
+
 const driverSchema = new Schema({
+  // 👤 Auth + identity
   name: {
     type: String,
     required: true,
@@ -19,6 +38,11 @@ const driverSchema = new Schema({
     unique: true,
     lowercase: true,
     trim: true,
+  },
+
+  password: {
+    type: String,
+    required: true, // hash stored here
   },
 
   phone: {
@@ -41,6 +65,7 @@ const driverSchema = new Schema({
     required: true,
   },
 
+  // 📍 Tracking
   currentLocation: {
     type: locationSchema,
     default: null,
@@ -61,6 +86,27 @@ const driverSchema = new Schema({
     index: true,
   },
 
+  // 📑 Onboarding + docs
+  documents: [documentSchema],
+
+  onboarding: {
+    status: {
+      type: String,
+      enum: ['pending', 'approved', 'rejected'],
+      default: 'pending',
+    },
+    updatedAt: { type: Date, default: Date.now },
+  }
+
 }, { timestamps: true });
 
-module.exports = mongoose.models.Driver || mongoose.model('Driver', driverSchema);
+// 🛡️ Strip sensitive data from JSON outputs
+driverSchema.set('toJSON', {
+  transform: (_doc, ret) => {
+    delete ret.password;
+    return ret;
+  }
+});
+
+module.exports =
+  mongoose.models.Driver || mongoose.model('Driver', driverSchema);

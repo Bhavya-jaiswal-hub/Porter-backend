@@ -1,0 +1,440 @@
+// controllers/driverOnboardingController.js
+// Purpose: Manage driver onboarding data, document uploads, and admin review flow.
+// Socket: Expects server.js to set `app.set('io', io)` so we can emit events via req.app.get('io').
+
+const fs = require('fs');
+const fsp = fs.promises;
+const path = require('path');
+const Driver = require('../models/Driver');
+
+// Provider-agnostic storage facade (auto-selects local or Supabase via STORAGE_PROVIDER)
+const storage = require('../services/storage');
+
+// Non-provider-specific config
+const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES || 8 * 1024 * 1024); // 8MB default
+const ALLOWED_DOC_TYPES = ['aadhar', 'pan', 'dl', 'rc', 'photo'];
+
+
+// ---------------------------------------------------------
+// Helpers (pure)
+// ---------------------------------------------------------
+// ---------------------------------------------------------
+// Onboarding: required docs & shape helpers
+// ---------------------------------------------------------
+
+/**
+ * Return the list of required document types for a given vehicle.
+ * @param {string} vehicleType
+ * @returns {string[]}
+ */
+function requiredDocsFor(vehicleType) {
+  const vt = String(vehicleType || '').trim().toLowerCase();
+  const base = ['aadhar', 'pan', 'dl']; // always required
+  if (['truck', 'commercial'].includes(vt)) return [...base, 'rc'];
+  return base;
+}
+
+/**
+ * Ensure the driver object has a complete onboarding structure
+ * with sensible defaults for all subfields.
+ * @param {object} driver - Mongoose document or plain object
+ * @returns {object} driver - Mutated driver with full onboarding shape
+ */
+function ensureOnboardingShape(driver) {
+  driver.onboarding = driver.onboarding || {};
+  const ob = driver.onboarding;
+
+  ob.status = ob.status || 'pending'; // pending | in_progress | under_review | approved | rejected
+  ob.personal = ob.personal || {
+    name: driver.name || '',
+    phone: driver.phone || '',
+    completed: false,
+  };
+  ob.vehicle = ob.vehicle || {
+    type: driver.vehicleType || '',
+    number: '',
+    completed: false,
+  };
+  ob.documents = ob.documents || {
+    aadhar: null,
+    pan: null,
+    dl: null,
+    rc: null,
+    photo: null,
+  };
+
+  return driver;
+}
+
+/**
+ * Determine which docs or sections are missing to allow final submission.
+ * @param {object} driver
+ * @returns {object} Status summary
+ */
+function computeMissing(driver) {
+  const reqDocs = requiredDocsFor(driver.onboarding?.vehicle?.type || driver.vehicleType || '');
+  const docs = driver.onboarding?.documents || {};
+  const missing = reqDocs.filter(key => !docs[key] || !docs[key]?.url);
+
+  const personalMissing =
+    !driver.onboarding?.personal?.completed ||
+    !driver.onboarding.personal.name ||
+    !driver.onboarding.personal.phone;
+
+  const vehicleMissing =
+    !driver.onboarding?.vehicle?.completed ||
+    !driver.onboarding.vehicle.type ||
+    !driver.onboarding.vehicle.number;
+
+  return {
+    missingDocs: missing,               // array of doc keys still needed
+    personalMissing,                     // boolean
+    vehicleMissing,                       // boolean
+    readyToSubmit: missing.length === 0 && !personalMissing && !vehicleMissing,
+  };
+}
+
+
+// ---------------------------------------------------------
+// Event emitter helper
+// ---------------------------------------------------------
+function ioEmit(req, room, event, payload) {
+  try {
+    const io = req.app?.get?.('io');
+    if (io) io.to(String(room)).emit(event, payload);
+  } catch (_) {
+    // Silently ignore emitter errors
+  }
+}
+
+// ---------------------------------------------------------
+// Utility: sanitize file names
+// ---------------------------------------------------------
+function sanitizeFileName(original) {
+  const base = path.basename(original).replace(/\s+/g, '_').replace(/[^a-zA-Z0-9._-]/g, '');
+  const ts = Date.now();
+  const [name, ext] = base.includes('.')
+    ? [base.slice(0, base.lastIndexOf('.')), base.slice(base.lastIndexOf('.'))]
+    : [base, ''];
+  return `${name}_${ts}${ext}`;
+}
+
+// ---------------------------------------------------------
+// Auth helper: extract current actor
+// ---------------------------------------------------------
+function getActor(req) {
+  // Expect upstream auth middleware to set req.user = { sub, role, ... }
+  const userId = req.user?.sub || req.user?.id;
+  const role = req.user?.role || 'driver';
+  return { userId, role };
+}
+
+// ---------------------------------------------------------
+// Storage adapter (provider-agnostic: local or Supabase)
+// ---------------------------------------------------------
+async function storageUpload({ driverId, docType, file }) {
+  if (!file || !file.buffer) {
+    const err = new Error('No file received');
+    err.status = 400;
+    throw err;
+  }
+
+  if (file.size && file.size > MAX_UPLOAD_BYTES) {
+    const mb = (MAX_UPLOAD_BYTES / (1024 * 1024)).toFixed(1);
+    const sz = (file.size / (1024 * 1024)).toFixed(1);
+    const err = new Error(`File too large: ${sz}MB > limit ${mb}MB`);
+    err.status = 413;
+    throw err;
+  }
+
+  // Delegate to provider‑agnostic storage service
+  const stored = await storage.upload({
+    buffer: file.buffer,
+    contentType: file.mimetype || 'application/octet-stream',
+    keyPrefix: `drivers/${driverId}/${docType}`,
+    originalName: file.originalname || `${docType}${path.extname(file.originalname || '')}`,
+  });
+
+  return {
+    url: stored.url,
+    key: stored.key,
+    isSigned: stored.isSigned || false,
+  };
+}
+
+async function storageRemove(keyOrPath) {
+  if (!keyOrPath) return;
+  try {
+    await storage.remove(keyOrPath);
+  } catch (_) {
+    // Ignore removal errors
+  }
+}
+
+async function storageGetUrl(key, { preferSigned = false, expiresIn = 3600 } = {}) {
+  if (!key) return null;
+  return await storage.getUrl(key, { preferSigned, expiresIn });
+}
+
+// ---------------------------------------------------------
+// Load + save helpers
+// ---------------------------------------------------------
+// ---------------------------------------------------------
+// Utility to find driver or send 401/404
+// ---------------------------------------------------------
+async function findDriverOr404(req, res) {
+  const { userId } = getActor(req);
+  if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+  const driver = await Driver.findById(userId);
+  if (!driver) return res.status(404).json({ error: 'Driver not found' });
+
+  ensureOnboardingShape(driver);
+  return driver;
+}
+
+// Validate docType
+function allowedDocTypeOr400(docType, res) {
+  const dt = String(docType || '').toLowerCase();
+  if (!ALLOWED_DOC_TYPES.includes(dt)) {
+    res.status(400).json({ error: `Invalid docType. Allowed: ${ALLOWED_DOC_TYPES.join(', ')}` });
+    return null;
+  }
+  return dt;
+}
+
+// ---------------------------------------------------------
+// Driver-facing controllers
+// ---------------------------------------------------------
+async function getOnboardingStatus(req, res) {
+  try {
+    const driver = await findDriverOr404(req, res);
+    if (!driver || res.headersSent) return;
+
+    const state = computeMissing(driver);
+    res.json({
+      status: driver.onboarding.status,
+      personal: driver.onboarding.personal,
+      vehicle: driver.onboarding.vehicle,
+      documents: driver.onboarding.documents,
+      ...state,
+    });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: 'Failed to fetch onboarding status' });
+  }
+}
+
+async function updatePersonalInfo(req, res) {
+  try {
+    const driver = await findDriverOr404(req, res);
+    if (!driver || res.headersSent) return;
+
+    const { name, phone } = req.body || {};
+    if (!name || !phone) {
+      return res.status(400).json({ error: 'name and phone are required' });
+    }
+
+    driver.onboarding.personal = {
+      name: String(name).trim(),
+      phone: String(phone).trim(),
+      completed: true,
+    };
+
+    if (driver.onboarding.status === 'pending') {
+      driver.onboarding.status = 'in_progress';
+    }
+
+    await driver.save();
+
+    ioEmit(req, driver._id, 'onboarding:personal:updated', driver.onboarding.personal);
+
+    res.json({ success: true, state: computeMissing(driver) });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: 'Failed to update personal info' });
+  }
+}
+
+async function updateVehicleInfo(req, res) {
+  try {
+    const driver = await findDriverOr404(req, res);
+    if (!driver || res.headersSent) return;
+
+    const { type, number } = req.body || {};
+    if (!type || !number) {
+      return res.status(400).json({ error: 'type and number are required' });
+    }
+
+    driver.onboarding.vehicle = {
+      type: String(type).trim(),
+      number: String(number).trim().toUpperCase(),
+      completed: true,
+    };
+
+    if (driver.onboarding.status === 'pending') {
+      driver.onboarding.status = 'in_progress';
+    }
+
+    await driver.save();
+
+    ioEmit(req, driver._id, 'onboarding:vehicle:updated', driver.onboarding.vehicle);
+
+    res.json({ success: true, state: computeMissing(driver) });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: 'Failed to update vehicle info' });
+  }
+}
+
+async function uploadDocument(req, res) {
+  try {
+    const driver = await findDriverOr404(req, res);
+    if (!driver || res.headersSent) return;
+
+    const docType = allowedDocTypeOr400(req.params.docType || req.body.docType, res);
+    if (!docType || res.headersSent) return;
+
+    if (!req.file) return res.status(400).json({ error: 'No file provided' });
+
+    // Remove existing file if present
+    const existing = driver.onboarding.documents[docType];
+    if (existing?.storageKey) {
+      await storageRemove(existing.storageKey);
+    }
+
+    const { url, key } = await storageUpload({
+      driverId: driver._id,
+      docType,
+      file: req.file,
+    });
+
+    driver.onboarding.documents[docType] = {
+      url,
+      storageKey: key,
+      uploadedAt: new Date(),
+      mime: req.file.mimetype || null,
+      size: req.file.size || null,
+      name: req.file.originalname || null,
+    };
+
+    if (driver.onboarding.status === 'pending') {
+      driver.onboarding.status = 'in_progress';
+    }
+
+    await driver.save();
+
+    ioEmit(req, driver._id, 'onboarding:doc:uploaded', { docType, url });
+
+    res.json({ success: true, docType, url, state: computeMissing(driver) });
+  } catch (err) {
+    res.status(err.status || 500).json({
+      error: err.status === 413 ? err.message : 'Failed to upload document',
+    });
+  }
+}
+
+async function deleteDocument(req, res) {
+  try {
+    const driver = await findDriverOr404(req, res);
+    if (!driver || res.headersSent) return;
+
+    const docType = allowedDocTypeOr400(req.params.docType || req.body.docType, res);
+    if (!docType || res.headersSent) return;
+
+    const existing = driver.onboarding.documents[docType];
+    if (!existing) return res.status(404).json({ error: 'Document not found' });
+
+    if (existing.storageKey) {
+      await storageRemove(existing.storageKey);
+    }
+
+    driver.onboarding.documents[docType] = null;
+    await driver.save();
+
+    ioEmit(req, driver._id, 'onboarding:doc:deleted', { docType });
+
+    res.json({ success: true, docType, state: computeMissing(driver) });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete document' });
+  }
+}
+
+async function submitForReview(req, res) {
+  try {
+    const driver = await findDriverOr404(req, res);
+    if (!driver || res.headersSent) return;
+
+    const state = computeMissing(driver);
+    if (!state.readyToSubmit) {
+      return res.status(400).json({
+        error: 'Onboarding incomplete',
+        details: state,
+      });
+    }
+
+    driver.onboarding.status = 'under_review';
+    driver.onboarding.submittedAt = new Date();
+    await driver.save();
+
+    ioEmit(req, driver._id, 'onboarding:submitted', {
+      submittedAt: driver.onboarding.submittedAt,
+    });
+    ioEmit(req, 'admins', 'onboarding:driver_submitted', {
+      driverId: String(driver._id),
+      vehicleType: driver.onboarding.vehicle.type,
+    });
+
+    res.json({
+      success: true,
+      status: driver.onboarding.status,
+      submittedAt: driver.onboarding.submittedAt,
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to submit for review' });
+  }
+}
+
+
+// Generate a fetchable URL for a document (signed if private bucket)
+async function getDocumentUrl(req, res) {
+  try {
+    const driver = await findDriverOr404(req, res);
+    if (!driver || res.headersSent) return;
+
+    const docType = allowedDocTypeOr400(req.params.docType || req.body.docType, res);
+    if (!docType || res.headersSent) return;
+
+    const existing = driver.onboarding.documents[docType];
+    if (!existing?.storageKey && !existing?.url) {
+      return res.status(404).json({ error: 'Document not found' });
+    }
+
+    // Use provider‑agnostic storage.getUrl()
+    const preferSigned = String(process.env.PREFER_SIGNED_URL || 'true') === 'true';
+    const expiresIn = Number(process.env.SIGNED_URL_TTL_SECONDS || 3600);
+
+    const url =
+      (preferSigned && existing.storageKey)
+        ? await storageGetUrl(existing.storageKey, { preferSigned: true, expiresIn })
+        : existing.url;
+
+    res.json({
+      docType,
+      url,
+      signed: Boolean(preferSigned && existing.storageKey),
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to create document URL' });
+  }
+}
+
+// ---------------------------------------------------------
+// Exports
+// ---------------------------------------------------------
+module.exports = {
+  getOnboardingStatus,
+  updatePersonalInfo,
+  updateVehicleInfo,
+  uploadDocument,
+  deleteDocument,
+  submitForReview,
+  getDocumentUrl,
+};

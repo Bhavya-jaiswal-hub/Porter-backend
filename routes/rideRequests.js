@@ -1,10 +1,12 @@
+// routes/rideRequests.js
 const express = require('express');
 const router = express.Router();
 const RideRequest = require('../models/RideRequest');
 const authenticateToken = require('../middlewares/authMiddleware');
 
-// 🔍 GET all ride requests
+// 🔍 GET all ride requests (optional filter by driverId)
 router.get('/', async (req, res) => {
+  console.log('Hit GET /ride-requests');
   try {
     const { driverId } = req.query;
     const query = driverId ? { driverId } : {};
@@ -14,27 +16,23 @@ router.get('/', async (req, res) => {
       .populate('userId', 'name email phone')
       .populate('driverId', 'name email phone');
 
-    res.status(200).json(rideRequests);
+    return res.status(200).json(rideRequests);
   } catch (error) {
     console.error('❌ Error fetching ride requests:', error);
-    res.status(500).json({ error: 'Failed to fetch ride requests' });
+    return res.status(500).json({ error: 'Failed to fetch ride requests' });
   }
 });
 
 // ✅ Test route
 router.get('/test', (req, res) => {
-  res.send("Ride request route is working");
+  return res.send('Ride request route is working');
 });
 
 // 🚚 POST create a ride request (Authenticated users only)
-router.post('/', authenticateToken, async (req, res) => {
+router.post('/', authenticateToken(), async (req, res) => {
+  console.log('POST /ride-requests hit');
   try {
-    const {
-      pickupLocation,
-      dropLocation,
-      fareEstimate,
-      vehicleType
-    } = req.body;
+    const { pickupLocation, dropLocation, fareEstimate, vehicleType } = req.body;
 
     // Validation
     if (!vehicleType) {
@@ -44,11 +42,13 @@ router.post('/', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Pickup and drop addresses are required' });
     }
 
-    const validUserId = req.user?._id || req.user?.id;
+    // ✅ Consistent user ID from token
+    const validUserId = req.user?.id;
     if (!validUserId) {
       return res.status(401).json({ error: 'User authentication failed' });
     }
 
+    // Generate booking ID
     const generatedBookingId = `RID-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
     const ride = new RideRequest({
@@ -58,14 +58,12 @@ router.post('/', authenticateToken, async (req, res) => {
       fareEstimate,
       bookingId: generatedBookingId,
       vehicleType,
-      driverId: null,
+      driverId: null
     });
 
     await ride.save();
 
-    // 🚫 Removed raw Socket.IO broadcast (handled via client emit + filtered server emit)
-
-    res.status(201).json({
+    return res.status(201).json({
       message: 'Ride request created',
       bookingId: generatedBookingId,
       ride
@@ -73,7 +71,7 @@ router.post('/', authenticateToken, async (req, res) => {
 
   } catch (error) {
     console.error('❌ Error creating ride request:', error);
-    res.status(500).json({ error: 'Failed to create ride request' });
+    return res.status(500).json({ error: 'Failed to create ride request' });
   }
 });
 
@@ -87,16 +85,17 @@ router.get('/:bookingId', async (req, res) => {
     }
 
     const ride = await RideRequest.findOne({ bookingId })
-      .populate('userId', 'name email phone');
+      .populate('userId', 'name email phone')
+      .populate('driverId', 'name email phone');
 
     if (!ride) {
       return res.status(404).json({ error: 'Ride not found' });
     }
 
-    res.status(200).json({ ride });
+    return res.status(200).json({ ride });
   } catch (error) {
     console.error('❌ Error fetching ride details:', error);
-    res.status(500).json({ error: 'Failed to fetch ride details' });
+    return res.status(500).json({ error: 'Failed to fetch ride details' });
   }
 });
 
