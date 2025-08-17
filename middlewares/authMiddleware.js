@@ -9,41 +9,36 @@ const jwt = require('jsonwebtoken');
 function authenticateToken(allowedRoles = []) {
   return (req, res, next) => {
     try {
-      // 1️⃣ Check for Authorization header
       const authHeader = req.headers.authorization;
       if (!authHeader?.startsWith('Bearer ')) {
         return res.status(401).json({ error: 'Missing or malformed Authorization header' });
       }
 
       const token = authHeader.split(' ')[1];
-
-      // 2️⃣ Verify token signature & expiration
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-      // 3️⃣ Ensure required claims exist (align with your current token shape)
-      if (!decoded?.userId) {
+      // Accept multiple possible id fields
+      const id = decoded.userId || decoded.sub || decoded._id;
+      if (!id) {
         return res.status(403).json({ error: 'Invalid token payload' });
       }
 
-      // 4️⃣ Role-based access check (if roles are in your tokens)
+      // Role check
       if (allowedRoles.length > 0) {
-        const role = decoded.role || 'user'; // default role if none present
+        const role = decoded.role || 'user';
         if (!allowedRoles.includes(role)) {
           return res.status(403).json({ error: 'Forbidden' });
         }
-        req.userRole = role; // store role separately for clarity
+        req.userRole = role;
       }
 
-      // 5️⃣ Attach user info to request object
-      // Keep naming consistent so downstream code doesn't break
       req.user = {
-        id: decoded.userId,       // your main identifier
+        id,
         role: decoded.role || 'user',
-        ...decoded,               // spread the rest in case you add more claims later
+        ...decoded
       };
 
       return next();
-
     } catch (err) {
       console.error('❌ Auth Middleware Error:', err.message);
       const status = err.name === 'TokenExpiredError' ? 401 : 403;
@@ -51,5 +46,6 @@ function authenticateToken(allowedRoles = []) {
     }
   };
 }
+
 
 module.exports = authenticateToken;

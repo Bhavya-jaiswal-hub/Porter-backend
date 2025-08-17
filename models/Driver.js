@@ -14,7 +14,7 @@ const documentSchema = new Schema({
     enum: ['license', 'rc', 'id'],
     required: true,
   },
-  url: { type: String, required: true },        // Supabase/public storage URL
+  url: { type: String, required: true }, // Supabase/public storage URL
   status: {
     type: String,
     enum: ['submitted', 'approved', 'rejected'],
@@ -22,6 +22,30 @@ const documentSchema = new Schema({
   },
   notes: { type: String, default: '' },
   uploadedAt: { type: Date, default: Date.now },
+}, { _id: false });
+
+// 🚦 Allowed onboarding states
+const onboardingStatusEnum = [
+  'pending',
+  'personal_in_progress',
+  'vehicle_in_progress',
+  'docs_in_progress',
+  'review',
+  'approved',
+  'rejected'
+];
+
+// 📄 Sub-schema for onboarding steps
+const personalSchema = new Schema({
+  name: { type: String, default: '' },
+  phone: { type: String, default: '' },
+  completed: { type: Boolean, default: false }
+}, { _id: false });
+
+const vehicleSchema = new Schema({
+  type: { type: String, default: '' },
+  number: { type: String, default: '' },
+  completed: { type: Boolean, default: false }
 }, { _id: false });
 
 const driverSchema = new Schema({
@@ -42,7 +66,7 @@ const driverSchema = new Schema({
 
   password: {
     type: String,
-    required: true, // hash stored here
+    required: true, // hashed password
   },
 
   phone: {
@@ -86,15 +110,19 @@ const driverSchema = new Schema({
     index: true,
   },
 
-  // 📑 Onboarding + docs
+  // 📑 Documents
   documents: [documentSchema],
 
+  // 📑 Onboarding + steps
   onboarding: {
     status: {
       type: String,
-      enum: ['pending', 'approved', 'rejected'],
+      enum: onboardingStatusEnum,
       default: 'pending',
     },
+    personal: { type: personalSchema, default: () => ({}) },
+    vehicle: { type: vehicleSchema, default: () => ({}) },
+    documentsUploaded: { type: Boolean, default: false },
     updatedAt: { type: Date, default: Date.now },
   }
 

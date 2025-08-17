@@ -224,33 +224,47 @@ async function getOnboardingStatus(req, res) {
   }
 }
 
+// 🚦 State mapping based on current step
+const ONBOARDING_STEPS = {
+  pending: 'personal_in_progress',
+  personal_in_progress: 'vehicle_in_progress',
+  vehicle_in_progress: 'docs_in_progress',
+  docs_in_progress: 'review'
+};
+
 async function updatePersonalInfo(req, res) {
   try {
     const driver = await findDriverOr404(req, res);
     if (!driver || res.headersSent) return;
 
     const { name, phone } = req.body || {};
-    if (!name || !phone) {
-      return res.status(400).json({ error: 'name and phone are required' });
+    if (typeof name !== 'string' || typeof phone !== 'string' || !name.trim() || !phone.trim()) {
+      return res.status(400).json({ error: 'Valid name and phone are required' });
     }
 
     driver.onboarding.personal = {
-      name: String(name).trim(),
-      phone: String(phone).trim(),
-      completed: true,
+      name: name.trim(),
+      phone: phone.trim(),
+      completed: true
     };
 
+    // Move to correct next status only if current status is pending
     if (driver.onboarding.status === 'pending') {
-      driver.onboarding.status = 'in_progress';
+      driver.onboarding.status = 'personal_in_progress';
     }
+
+    driver.onboarding.updatedAt = new Date();
 
     await driver.save();
 
     ioEmit(req, driver._id, 'onboarding:personal:updated', driver.onboarding.personal);
 
-    res.json({ success: true, state: computeMissing(driver) });
+    return res.json({ success: true, state: computeMissing(driver), status: driver.onboarding.status });
   } catch (err) {
-    res.status(err.status || 500).json({ error: 'Failed to update personal info' });
+    console.error('❌ Error updating personal info:', err);
+    return res
+      .status(err.name === 'ValidationError' ? 400 : (err.status || 500))
+      .json({ error: err.message || 'Failed to update personal info' });
   }
 }
 
@@ -260,29 +274,36 @@ async function updateVehicleInfo(req, res) {
     if (!driver || res.headersSent) return;
 
     const { type, number } = req.body || {};
-    if (!type || !number) {
-      return res.status(400).json({ error: 'type and number are required' });
+    if (typeof type !== 'string' || typeof number !== 'string' || !type.trim() || !number.trim()) {
+      return res.status(400).json({ error: 'Valid type and number are required' });
     }
 
     driver.onboarding.vehicle = {
-      type: String(type).trim(),
-      number: String(number).trim().toUpperCase(),
-      completed: true,
+      type: type.trim(),
+      number: number.trim().toUpperCase(),
+      completed: true
     };
 
-    if (driver.onboarding.status === 'pending') {
-      driver.onboarding.status = 'in_progress';
+    // Only update status if currently at personal_in_progress
+    if (driver.onboarding.status === 'personal_in_progress') {
+      driver.onboarding.status = 'vehicle_in_progress';
     }
+
+    driver.onboarding.updatedAt = new Date();
 
     await driver.save();
 
     ioEmit(req, driver._id, 'onboarding:vehicle:updated', driver.onboarding.vehicle);
 
-    res.json({ success: true, state: computeMissing(driver) });
+    return res.json({ success: true, state: computeMissing(driver), status: driver.onboarding.status });
   } catch (err) {
-    res.status(err.status || 500).json({ error: 'Failed to update vehicle info' });
+    console.error('❌ Error updating vehicle info:', err);
+    return res
+      .status(err.name === 'ValidationError' ? 400 : (err.status || 500))
+      .json({ error: err.message || 'Failed to update vehicle info' });
   }
 }
+
 
 async function uploadDocument(req, res) {
   try {

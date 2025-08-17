@@ -38,20 +38,28 @@ if (STORAGE_PROVIDER === 'supabase') {
 const app = express();
 const server = http.createServer(app);
 
-// CORS: allow credentials for cookie-based refresh
-const rawOrigins = (process.env.CLIENT_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
+// Resolve uploads root once (used only for local storage)
+const uploadsRoot = path.join(process.cwd(), 'uploads');
+
+// CORS: allow credentials for cookie-based refresh when explicit origins are provided
+const rawOrigins = (process.env.CLIENT_ORIGINS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 const corsOptions = rawOrigins.length
   ? { origin: rawOrigins, credentials: true }
-  : { origin: '*', credentials: false }; // fallback: no cookies with wildcard
+  : { origin: '*', credentials: false }; // fallback: wildcard (no cookies)
 
 app.use(cors(corsOptions));
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 app.use(cookieParser());
+
+// Static assets
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Serve local uploads if using local storage
+// Serve local uploads only when STORAGE_PROVIDER === 'local'
 if (STORAGE_PROVIDER === 'local') {
-  const uploadsRoot = path.join(process.cwd(), 'uploads');
   app.use('/uploads', express.static(uploadsRoot));
 }
 
@@ -82,16 +90,21 @@ app.use('/api/ride-requests', rideRequestsRoutes);
 app.use('/api/driver/auth', driverAuthRoutes);
 app.use('/api/driver/onboarding', driverOnboardingRoutes);
 
+// Health check (optional)
+app.get('/health', (_req, res) => res.status(200).json({ ok: true }));
+
 // ---------- Real-time state ----------
 const SEARCH_RADIUS_KM = Number(process.env.SEARCH_RADIUS_KM || 8);
 
 // Keyed by socket.id so multiple tabs with same driverId don't overwrite each other
 let availableDrivers = {};
 
-
 // Haversine (km)
 function getDistance(loc1, loc2) {
-  const valid = (p) => p && Number.isFinite(Number(p.lat)) && Number.isFinite(Number(p.lng));
+  const valid = (p) =>
+    p &&
+    Number.isFinite(Number(p.lat)) &&
+    Number.isFinite(Number(p.lng));
   if (!valid(loc1) || !valid(loc2)) return Infinity;
 
   const toRad = (v) => (Number(v) * Math.PI) / 180;
@@ -268,6 +281,11 @@ io.on('connection', (socket) => {
 
 // MongoDB and Server Start
 const PORT = process.env.PORT || 8080;
+
+if (!process.env.MONGO_URI) {
+  console.error('Missing MONGO_URI in environment.');
+  process.exit(1);
+}
 
 mongoose
   .connect(process.env.MONGO_URI)
