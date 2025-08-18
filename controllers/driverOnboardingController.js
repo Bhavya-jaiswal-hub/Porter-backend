@@ -310,10 +310,15 @@ async function uploadDocument(req, res) {
     const driver = await findDriverOr404(req, res);
     if (!driver || res.headersSent) return;
 
-    const docType = allowedDocTypeOr400(req.params.docType || req.body.docType, res);
+    const docType = allowedDocTypeOr400(
+      req.params.docType || req.body.docType,
+      res
+    );
     if (!docType || res.headersSent) return;
 
-    if (!req.file) return res.status(400).json({ error: 'No file provided' });
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file provided' });
+    }
 
     // Remove existing file if present
     const existing = driver.onboarding.documents[docType];
@@ -321,12 +326,14 @@ async function uploadDocument(req, res) {
       await storageRemove(existing.storageKey);
     }
 
+    // Upload to storage
     const { url, key } = await storageUpload({
       driverId: driver._id,
       docType,
       file: req.file,
     });
 
+    // Save metadata
     driver.onboarding.documents[docType] = {
       url,
       storageKey: key,
@@ -336,44 +343,92 @@ async function uploadDocument(req, res) {
       name: req.file.originalname || null,
     };
 
-    if (driver.onboarding.status === 'pending') {
+    // Recompute missing docs and save to DB
+    driver.onboarding.missingDocs = computeMissing(driver);
+
+    // Auto‑advance onboarding status
+    if (driver.onboarding.missingDocs.length === 0) {
+      driver.onboarding.status = 'ready_for_review'; // or "review"
+    } else if (driver.onboarding.status === 'pending') {
       driver.onboarding.status = 'in_progress';
     }
 
     await driver.save();
 
-    ioEmit(req, driver._id, 'onboarding:doc:uploaded', { docType, url });
+    // Emit to socket listeners
+    ioEmit(req, driver._id, 'onboarding:doc:uploaded', {
+      docType,
+      url,
+      missingDocs: driver.onboarding.missingDocs,
+      onboardingStatus: driver.onboarding.status,
+    });
 
-    res.json({ success: true, docType, url, state: computeMissing(driver) });
+    res.json({
+      success: true,
+      docType,
+      url,
+      missingDocs: driver.onboarding.missingDocs,
+      onboardingStatus: driver.onboarding.status,
+    });
   } catch (err) {
+    console.error(err);
     res.status(err.status || 500).json({
-      error: err.status === 413 ? err.message : 'Failed to upload document',
+      error:
+        err.status === 413 ? err.message : 'Failed to upload document',
     });
   }
 }
+
 
 async function deleteDocument(req, res) {
   try {
     const driver = await findDriverOr404(req, res);
     if (!driver || res.headersSent) return;
 
-    const docType = allowedDocTypeOr400(req.params.docType || req.body.docType, res);
+    const docType = allowedDocTypeOr400(
+      req.params.docType || req.body.docType,
+      res
+    );
     if (!docType || res.headersSent) return;
 
     const existing = driver.onboarding.documents[docType];
-    if (!existing) return res.status(404).json({ error: 'Document not found' });
+    if (!existing) {
+      return res.status(404).json({ error: 'Document not found' });
+    }
 
+    // Remove from storage
     if (existing.storageKey) {
       await storageRemove(existing.storageKey);
     }
 
+    // Remove from DB
     driver.onboarding.documents[docType] = null;
+
+    // Recompute and persist missing docs
+    driver.onboarding.missingDocs = computeMissing(driver);
+
+    // Auto‑adjust onboarding status
+    if (driver.onboarding.status === 'ready_for_review') {
+      driver.onboarding.status = 'in_progress';
+    }
+
     await driver.save();
 
-    ioEmit(req, driver._id, 'onboarding:doc:deleted', { docType });
+    // Notify driver UI
+    ioEmit(req, driver._id, 'onboarding:doc:deleted', {
+      docType,
+      missingDocs: driver.onboarding.missingDocs,
+      onboardingStatus: driver.onboarding.status,
+    });
 
-    res.json({ success: true, docType, state: computeMissing(driver) });
+    res.json({
+      success: true,
+      docType,
+      missingDocs: driver.onboarding.missingDocs,
+      onboardingStatus: driver.onboarding.status,
+    });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: 'Failed to delete document' });
   }
 }
@@ -383,21 +438,27 @@ async function submitForReview(req, res) {
     const driver = await findDriverOr404(req, res);
     if (!driver || res.headersSent) return;
 
-    const state = computeMissing(driver);
-    if (!state.readyToSubmit) {
+    // Always recompute and persist before submit
+    driver.onboarding.missingDocs = computeMissing(driver);
+
+    if (driver.onboarding.missingDocs.length > 0) {
       return res.status(400).json({
         error: 'Onboarding incomplete',
-        details: state,
+        missingDocs: driver.onboarding.missingDocs,
       });
     }
 
     driver.onboarding.status = 'under_review';
     driver.onboarding.submittedAt = new Date();
+
     await driver.save();
 
+    // Notify the driver UI
     ioEmit(req, driver._id, 'onboarding:submitted', {
       submittedAt: driver.onboarding.submittedAt,
     });
+
+    // Notify all admins
     ioEmit(req, 'admins', 'onboarding:driver_submitted', {
       driverId: String(driver._id),
       vehicleType: driver.onboarding.vehicle.type,
@@ -409,9 +470,11 @@ async function submitForReview(req, res) {
       submittedAt: driver.onboarding.submittedAt,
     });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: 'Failed to submit for review' });
   }
 }
+
 
 
 // Generate a fetchable URL for a document (signed if private bucket)
