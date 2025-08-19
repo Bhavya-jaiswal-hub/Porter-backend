@@ -109,24 +109,35 @@ router.post(
       const driver = await Driver.findById(req.user.id);
       if (!driver) return res.status(404).json({ error: 'Driver not found' });
 
-      // Build public URL for local dev; replace with your Supabase/S3 URL when applicable.
       const fileUrl = `/uploads/driverDocs/${req.user.id}/${req.file.filename}`;
 
       if (!Array.isArray(driver.documents)) driver.documents = [];
 
+      // Insert or update this doc
       upsertDocument(driver.documents, {
         type,
         url: fileUrl,
-        status: 'submitted', // aligns with your schema default
+        status: 'submitted',
         notes: notes || '',
         uploadedAt: new Date(),
       });
 
-      // When a new doc is submitted, onboarding should at least be pending
-      driver.onboarding = {
-        status: 'pending',
-        updatedAt: new Date(),
-      };
+      // ---- NEW: dynamic status update ----
+      const missingTypes = computeMissingTypes(driver.documents);
+      if (missingTypes.length === 0) {
+        // All docs uploaded — now check approval state if needed
+        driver.onboarding = {
+          status: areAllApproved(driver.documents)
+            ? 'approved'
+            : 'ready_for_review',
+          updatedAt: new Date(),
+        };
+      } else {
+        driver.onboarding = {
+          status: 'in_progress',
+          updatedAt: new Date(),
+        };
+      }
 
       await driver.save();
 
@@ -134,6 +145,7 @@ router.post(
         ok: true,
         document: indexByType(driver.documents)[type],
         documents: driver.documents,
+        missingTypes,
         onboarding: driver.onboarding,
       });
     } catch (err) {
@@ -146,5 +158,6 @@ router.post(
     }
   }
 );
+
 
 module.exports = router;

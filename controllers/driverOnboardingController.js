@@ -66,6 +66,7 @@ function ensureOnboardingShape(driver) {
   return driver;
 }
 
+
 /**
  * Determine which docs or sections are missing to allow final submission.
  * @param {object} driver
@@ -74,7 +75,11 @@ function ensureOnboardingShape(driver) {
 function computeMissing(driver) {
   const reqDocs = requiredDocsFor(driver.onboarding?.vehicle?.type || driver.vehicleType || '');
   const docs = driver.onboarding?.documents || {};
-  const missing = reqDocs.filter(key => !docs[key] || !docs[key]?.url);
+const missing = reqDocs.filter((key) => {
+  const entry = docs[key];
+  return !entry || (!entry.url && !entry.storageKey);
+});
+
 
   const personalMissing =
     !driver.onboarding?.personal?.completed ||
@@ -130,8 +135,7 @@ function getActor(req) {
 }
 
 // ---------------------------------------------------------
-// Storage adapter (provider-agnostic: local or Supabase)
-// ---------------------------------------------------------
+// Storage adapter (provider‑agnostic: local or Supabase)
 async function storageUpload({ driverId, docType, file }) {
   if (!file || !file.buffer) {
     const err = new Error('No file received');
@@ -147,12 +151,23 @@ async function storageUpload({ driverId, docType, file }) {
     throw err;
   }
 
-  // Delegate to provider‑agnostic storage service
-  const stored = await storage.upload({
+  // Debug log — helps check adapter shape in future
+  console.log('storage type:', typeof storage);
+  console.log('storage keys:', storage && Object.keys(storage));
+
+  // Prefer unified `upload` name if available, else fall back to `uploadFile`
+  const uploadFn = storage.upload || storage.uploadFile;
+  if (typeof uploadFn !== 'function') {
+    throw new Error('Storage adapter has no upload or uploadFile method');
+  }
+
+  const stored = await uploadFn.call(storage, {
     buffer: file.buffer,
     contentType: file.mimetype || 'application/octet-stream',
     keyPrefix: `drivers/${driverId}/${docType}`,
-    originalName: file.originalname || `${docType}${path.extname(file.originalname || '')}`,
+    originalName:
+      file.originalname ||
+      `${docType}${path.extname(file.originalname || '')}`,
   });
 
   return {
@@ -165,15 +180,33 @@ async function storageUpload({ driverId, docType, file }) {
 async function storageRemove(keyOrPath) {
   if (!keyOrPath) return;
   try {
-    await storage.remove(keyOrPath);
+    if (typeof storage.remove === 'function') {
+      await storage.remove(keyOrPath);
+    } else if (typeof storage.removeFile === 'function') {
+      await storage.removeFile(keyOrPath);
+    }
   } catch (_) {
     // Ignore removal errors
   }
 }
 
-async function storageGetUrl(key, { preferSigned = false, expiresIn = 3600 } = {}) {
+async function storageGetUrl(
+  key,
+  { preferSigned = false, expiresIn = 3600 } = {}
+) {
   if (!key) return null;
-  return await storage.getUrl(key, { preferSigned, expiresIn });
+
+  // Prefer `getUrl` if available, else fallback
+  if (typeof storage.getUrl === 'function') {
+    return await storage.getUrl(key, { preferSigned, expiresIn });
+  }
+  if (preferSigned && typeof storage.getSignedUrl === 'function') {
+    return await storage.getSignedUrl(key, { expiresIn });
+  }
+  if (!preferSigned && typeof storage.getPublicUrl === 'function') {
+    return storage.getPublicUrl(key);
+  }
+  return null;
 }
 
 // ---------------------------------------------------------
@@ -316,6 +349,10 @@ async function uploadDocument(req, res) {
     );
     if (!docType || res.headersSent) return;
 
+     console.log('docType uploaded:', docType);
+    console.log('current docs keys:', Object.keys(driver.onboarding?.documents || {}));
+    console.log('doc entry for this type:', driver.onboarding?.documents?.[docType]);
+
     if (!req.file) {
       return res.status(400).json({ error: 'No file provided' });
     }
@@ -326,34 +363,38 @@ async function uploadDocument(req, res) {
       await storageRemove(existing.storageKey);
     }
 
-    // Upload to storage
-    const { url, key } = await storageUpload({
-      driverId: driver._id,
-      docType,
-      file: req.file,
-    });
+   // Upload to storage
+const { url, key } = await storageUpload({
+  driverId: driver._id,
+  docType,
+  file: req.file,
+});
 
-    // Save metadata
-    driver.onboarding.documents[docType] = {
-      url,
-      storageKey: key,
-      uploadedAt: new Date(),
-      mime: req.file.mimetype || null,
-      size: req.file.size || null,
-      name: req.file.originalname || null,
-    };
+// Save metadata
+driver.onboarding.documents[docType] = {
+  url,
+  storageKey: key,
+  uploadedAt: new Date(),
+  mime: req.file.mimetype || null,
+  size: req.file.size || null,
+  name: req.file.originalname || null,
+};
 
-    // Recompute missing docs and save to DB
-    driver.onboarding.missingDocs = computeMissing(driver);
+// ✅ Ensure Mongoose sees the nested object change
+driver.markModified('onboarding.documents');
 
-    // Auto‑advance onboarding status
-    if (driver.onboarding.missingDocs.length === 0) {
-      driver.onboarding.status = 'ready_for_review'; // or "review"
-    } else if (driver.onboarding.status === 'pending') {
-      driver.onboarding.status = 'in_progress';
-    }
+// Recompute missing docs *after* updating docs in memory
+driver.onboarding.missingDocs = computeMissing(driver);
 
-    await driver.save();
+// Auto‑advance onboarding status
+if (driver.onboarding.missingDocs.length === 0) {
+  driver.onboarding.status = 'ready_for_review';
+} else if (driver.onboarding.status === 'pending') {
+  driver.onboarding.status = 'in_progress';
+}
+
+await driver.save();
+
 
     // Emit to socket listeners
     ioEmit(req, driver._id, 'onboarding:doc:uploaded', {

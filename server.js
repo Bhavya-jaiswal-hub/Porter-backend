@@ -22,6 +22,8 @@ const paymentRoutes = require('./routes/paymentRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const otpRoutes = require('./routes/otpAuth');
 const rideRequestsRoutes = require('./routes/rideRequests');
+const adminOnboardingRoutes = require('./routes/adminOnboardingRoutes');
+const adminAuthRoutes = require('./routes/adminAuthRoutes');
 
 // New driver routes
 const driverAuthRoutes = require('./routes/driverAuthRoutes');
@@ -85,6 +87,8 @@ app.use('/bookings', bookingRoutes);
 app.use('/payments', paymentRoutes);
 app.use('/admin', adminRoutes);
 app.use('/api/ride-requests', rideRequestsRoutes);
+app.use('/api/admin', adminOnboardingRoutes);
+app.use('/api/admin/auth', adminAuthRoutes);
 
 // New driver auth + onboarding
 app.use('/api/driver/auth', driverAuthRoutes);

@@ -1,19 +1,13 @@
-const adminOnly = (req, res, next) => {
-  if (!req.user || !req.user.userId) {
+// middleware/adminOnly.js
+module.exports = function adminOnly(req, res, next) {
+  // requireAuth middleware should already verify token & set req.user
+  if (!req.user || !req.user.role) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  // Fetch user from DB (only once for this request)
-  const User = require('../models/User');
-  User.findById(req.user.userId).then(user => {
-    if (user && user.isAdmin) {
-      next();
-    } else {
-      res.status(403).json({ error: 'Admin access only' });
-    }
-  }).catch(() => {
-    res.status(500).json({ error: 'Server error' });
-  });
-};
+  if (req.user.role === 'admin') {
+    return next();
+  }
 
-module.exports = adminOnly;
+  return res.status(403).json({ error: 'Admin access only' });
+};
