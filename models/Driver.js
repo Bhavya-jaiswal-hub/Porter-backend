@@ -54,7 +54,7 @@ const vehicleSchema = new Schema(
   { _id: false }
 );
 
-// ✅ Fixed: Proper sub-schema for missingDocs
+// ✅ Fixed: missingDocs should be ONE object, not an array
 const missingDocsSchema = new Schema(
   {
     missingDocs: { type: [String], default: [] },
@@ -133,7 +133,7 @@ const driverSchema = new Schema(
       personal: { type: personalSchema, default: () => ({}) },
       vehicle: { type: vehicleSchema, default: () => ({}) },
 
-      // ✅ Now supports per-docType objects instead of a flat array
+      // ✅ Per-docType objects
       documents: {
         aadhar: { type: onboardingDocSchema, default: null },
         pan: { type: onboardingDocSchema, default: null },
@@ -141,8 +141,8 @@ const driverSchema = new Schema(
         rc: { type: onboardingDocSchema, default: null },
       },
 
-      // ✅ Fixed: now stores objects, not just strings
-      missingDocs: { type: [missingDocsSchema], default: [] },
+      // ✅ Fixed: now an object, not an array
+      missingDocs: { type: missingDocsSchema, default: () => ({}) },
       documentsUploaded: { type: Boolean, default: false },
       updatedAt: { type: Date, default: Date.now },
     },
