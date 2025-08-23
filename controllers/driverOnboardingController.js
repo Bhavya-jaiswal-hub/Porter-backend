@@ -151,16 +151,25 @@ async function storageUpload({ driverId, docType, file }) {
     throw err;
   }
 
-  // Debug log — helps check adapter shape in future
-  console.log('storage type:', typeof storage);
-  console.log('storage keys:', storage && Object.keys(storage));
+  // Debug storage adapter
+  console.log('>>> storage adapter type:', typeof storage);
+  console.log('>>> storage adapter keys:', storage && Object.keys(storage));
 
-  // Prefer unified `upload` name if available, else fall back to `uploadFile`
-  const uploadFn = storage.upload || storage.uploadFile;
-  if (typeof uploadFn !== 'function') {
-    throw new Error('Storage adapter has no upload or uploadFile method');
+  // Choose correct upload function
+  let uploadFn = null;
+  if (typeof storage.upload === 'function') {
+    uploadFn = storage.upload;
+  } else if (typeof storage.uploadFile === 'function') {
+    uploadFn = storage.uploadFile;
   }
 
+  if (!uploadFn) {
+    const err = new Error('Storage adapter has no upload or uploadFile method');
+    err.status = 500;
+    throw err;
+  }
+
+  // Perform upload
   const stored = await uploadFn.call(storage, {
     buffer: file.buffer,
     contentType: file.mimetype || 'application/octet-stream',
@@ -170,12 +179,17 @@ async function storageUpload({ driverId, docType, file }) {
       `${docType}${path.extname(file.originalname || '')}`,
   });
 
+  // Debug uploaded file details
+  console.log('>>> storage returned:', stored);
+
   return {
-    url: stored.url,
-    key: stored.key,
-    isSigned: stored.isSigned || false,
+    url: stored?.url || null,
+    key: stored?.key || null,
+    isSigned: stored?.isSigned || false,
   };
 }
+
+
 
 async function storageRemove(keyOrPath) {
   if (!keyOrPath) return;
@@ -352,6 +366,8 @@ async function uploadDocument(req, res) {
      console.log('docType uploaded:', docType);
     console.log('current docs keys:', Object.keys(driver.onboarding?.documents || {}));
     console.log('doc entry for this type:', driver.onboarding?.documents?.[docType]);
+    console.log(req.file)
+    console.log(">>> req.file", req.file);
 
     if (!req.file) {
       return res.status(400).json({ error: 'No file provided' });
@@ -394,6 +410,7 @@ if (driver.onboarding.missingDocs.length === 0) {
 }
 
 await driver.save();
+console.log(">>> saved driver docs", driver.onboarding.documents);
 
 
     // Emit to socket listeners
