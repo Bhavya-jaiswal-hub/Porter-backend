@@ -586,24 +586,40 @@ async function deleteDocument(req, res) {
 
 
 
-
 async function submitForReview(req, res) {
   try {
     const driver = await findDriverOr404(req, res);
     if (!driver || res.headersSent) return;
 
-    // Always recompute and persist before submit
-    driver.onboarding.missingDocs = computeMissing(driver);
+    // Recompute missing docs
+    const missingResult = computeMissing(driver);
+    // Handle both array or object with missingDocs key
+    const missingDocsArray = Array.isArray(missingResult)
+      ? missingResult
+      : Array.isArray(missingResult?.missingDocs)
+        ? missingResult.missingDocs
+        : [];
 
-    if (driver.onboarding.missingDocs.length > 0) {
+    driver.onboarding.missingDocs = missingResult;
+    driver.markModified('onboarding.missingDocs');
+
+    if (missingDocsArray.length > 0) {
       return res.status(400).json({
         error: 'Onboarding incomplete',
-        missingDocs: driver.onboarding.missingDocs,
+        missingDocs: missingResult,
+      });
+    }
+
+    // Prevent re‑submission if already reviewed
+    if (['under_review', 'approved', 'rejected'].includes(driver.onboarding.status)) {
+      return res.status(400).json({
+        error: `Cannot submit while status is '${driver.onboarding.status}'`,
       });
     }
 
     driver.onboarding.status = 'under_review';
     driver.onboarding.submittedAt = new Date();
+    driver.markModified('onboarding');
 
     await driver.save();
 
@@ -615,7 +631,7 @@ async function submitForReview(req, res) {
     // Notify all admins
     ioEmit(req, 'admins', 'onboarding:driver_submitted', {
       driverId: String(driver._id),
-      vehicleType: driver.onboarding.vehicle.type,
+      vehicleType: driver.onboarding?.vehicle?.type || null,
     });
 
     res.json({
@@ -624,7 +640,7 @@ async function submitForReview(req, res) {
       submittedAt: driver.onboarding.submittedAt,
     });
   } catch (err) {
-    console.error(err);
+    console.error('❌ submitForReview error:', err);
     res.status(500).json({ error: 'Failed to submit for review' });
   }
 }

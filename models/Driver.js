@@ -31,9 +31,11 @@ const onboardingStatusEnum = [
   'vehicle_in_progress',
   'docs_in_progress',
   'ready_for_review',
+  'under_review',   // ✅ added
   'approved',
   'rejected',
 ];
+
 
 // 📄 Sub-schema for onboarding steps
 const personalSchema = new Schema(
