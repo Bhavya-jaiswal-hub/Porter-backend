@@ -11,19 +11,25 @@ function authenticateToken(allowedRoles = []) {
     try {
       const authHeader = req.headers.authorization;
       if (!authHeader?.startsWith('Bearer ')) {
-        return res.status(401).json({ error: 'Missing or malformed Authorization header' });
+        return res
+          .status(401)
+          .json({ error: 'Missing or malformed Authorization header' });
       }
 
       const token = authHeader.split(' ')[1];
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
+      // 🔍 Debug: log the full decoded payload to inspect its shape
+      console.log('Decoded JWT payload:', decoded);
+
       // Accept multiple possible id fields
-      const id = decoded.userId || decoded.sub || decoded._id;
+      const id =
+        decoded.userId || decoded.sub || decoded._id || decoded.id;
       if (!id) {
         return res.status(403).json({ error: 'Invalid token payload' });
       }
 
-      // Role check
+      // Role check if specific roles are required
       if (allowedRoles.length > 0) {
         const role = decoded.role || 'user';
         if (!allowedRoles.includes(role)) {
@@ -32,6 +38,7 @@ function authenticateToken(allowedRoles = []) {
         req.userRole = role;
       }
 
+      // Attach user info to req
       req.user = {
         id,
         role: decoded.role || 'user',
@@ -39,18 +46,19 @@ function authenticateToken(allowedRoles = []) {
       };
 
       // ✅ Explicitly set req.driverId for driver accounts
-if (req.user.role === 'driver') {
-  req.driverId = req.user.id; // or req.user.sub if that's your standard field
-}
+      if (req.user.role === 'driver') {
+        req.driverId = req.user.id; // or req.user.sub if that's your standard field
+      }
 
       return next();
     } catch (err) {
       console.error('❌ Auth Middleware Error:', err.message);
       const status = err.name === 'TokenExpiredError' ? 401 : 403;
-      return res.status(status).json({ error: 'Invalid or expired token' });
+      return res
+        .status(status)
+        .json({ error: 'Invalid or expired token' });
     }
   };
 }
-
 
 module.exports = authenticateToken;
