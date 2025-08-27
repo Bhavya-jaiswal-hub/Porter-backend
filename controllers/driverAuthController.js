@@ -4,7 +4,7 @@ const jwt = require('jsonwebtoken');
 const Driver = require('../models/Driver');
 
 // Config
-const ACCESS_TTL = process.env.ACCESS_TTL || '15m';
+const ACCESS_TTL = process.env.ACCESS_TTL || '1d';
 const REFRESH_TTL = process.env.REFRESH_TTL || '7d';
 const COOKIE_NAME = 'rt_driver';
 const COOKIE_PATH = '/api/driver/auth';

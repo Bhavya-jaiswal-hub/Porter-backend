@@ -38,6 +38,11 @@ function authenticateToken(allowedRoles = []) {
         ...decoded
       };
 
+      // ✅ Explicitly set req.driverId for driver accounts
+if (req.user.role === 'driver') {
+  req.driverId = req.user.id; // or req.user.sub if that's your standard field
+}
+
       return next();
     } catch (err) {
       console.error('❌ Auth Middleware Error:', err.message);

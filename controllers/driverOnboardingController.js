@@ -349,8 +349,7 @@ async function updateVehicleInfo(req, res) {
       .status(err.name === 'ValidationError' ? 400 : (err.status || 500))
       .json({ error: err.message || 'Failed to update vehicle info' });
   }
-} 
-async function uploadDocument(req, res) {
+} async function uploadDocument(req, res) {
   try {
     const driver = await findDriverOr404(req, res);
     if (!driver || res.headersSent) return;
@@ -362,19 +361,15 @@ async function uploadDocument(req, res) {
     if (!docType || res.headersSent) return;
 
     const requiredDocs = ['aadhar', 'pan', 'dl', 'rc'];
-
-    // ✅ Ensure documents object exists
-    if (!driver.documents && driver.onboarding?.documents) {
-      driver.documents = driver.onboarding.documents;
-    } else if (!driver.documents) {
-      driver.documents = {};
-    }
-
-    const docsObj = driver.documents || driver.onboarding?.documents || {};
-
-    // ✅ Check if ALL docs uploaded
-    const allUploadedAlready = requiredDocs.every(d => !!docsObj[d]);
     const underReviewStatuses = ['ready_for_review', 'under_review'];
+
+    // ✅ Ensure onboarding.documents exists and is the ONLY source of truth
+    if (!driver.onboarding) driver.onboarding = {};
+    if (!driver.onboarding.documents) driver.onboarding.documents = {};
+    const docsObj = driver.onboarding.documents;
+
+    // ✅ Check if all docs are uploaded
+    const allUploadedAlready = requiredDocs.every(d => !!docsObj[d]);
 
     // 🚫 Block if all docs uploaded & in review
     if (allUploadedAlready && underReviewStatuses.includes(driver.onboarding.status)) {
@@ -386,17 +381,16 @@ async function uploadDocument(req, res) {
       });
     }
 
-    // 🚫 Block replacing a specific doc only if in review stage
+    // 🚫 Block replacing a specific doc if in review stage
     if (
       docsObj[docType] &&
-      allUploadedAlready &&
       underReviewStatuses.includes(driver.onboarding.status)
     ) {
       return res.status(200).json({
         success: false,
         message: `${docType.toUpperCase()} is already uploaded. No changes allowed during review.`,
         onboardingStatus: driver.onboarding.status,
-        documentsUploaded: true
+        documentsUploaded: allUploadedAlready
       });
     }
 
@@ -405,17 +399,15 @@ async function uploadDocument(req, res) {
       return res.status(400).json({ error: 'No file provided' });
     }
 
-    // Remove old file if exists
-const existing = driver.documents[docType];
-if (existing?.storageKey) {
-  try {
-    const removed = await storageRemove(existing.storageKey);
-    console.log(`✅ Removed old file for ${docType}:`, existing.storageKey, removed);
-  } catch (err) {
-    console.error(`❌ Failed to remove old ${docType} file:`, err.message);
-  }
-}
-
+    // 🗑 Remove old file if exists
+    if (docsObj[docType]?.storageKey) {
+      try {
+        const removed = await storageRemove(docsObj[docType].storageKey);
+        console.log(`✅ Removed old file for ${docType}:`, docsObj[docType].storageKey, removed);
+      } catch (err) {
+        console.error(`❌ Failed to remove old ${docType} file:`, err.message);
+      }
+    }
 
     // ⬆ Upload new file
     const { url, key } = await storageUpload({
@@ -424,36 +416,36 @@ if (existing?.storageKey) {
       file: req.file,
     });
 
-    // 📝 Save metadata
-    driver.documents[docType] = {
+    // 📝 Save metadata directly in onboarding.documents (mutate live object)
+    docsObj[docType] = {
       url,
       storageKey: key,
       uploadedAt: new Date(),
       mime: req.file.mimetype || null,
       size: req.file.size || null,
-      name: req.file.originalname || null,
+      name: req.file.originalname || null
     };
-    driver.markModified('documents');
+    driver.markModified('onboarding.documents'); // ✅ ensure persistence
 
-    // 🔄 Recompute missing docs
-    driver.onboarding.missingDocs = computeMissing(driver);
+    // 🔄 Recompute missing docs + flags
+    const missingList = requiredDocs.filter(d => !docsObj[d]);
+    driver.onboarding.missingDocs = {
+      missingDocs: missingList,
+      personalMissing: false,
+      vehicleMissing: false,
+      readyToSubmit: missingList.length === 0
+    };
 
-    // 🚚 Ensure vehicle object
-    if (!driver.vehicle) {
-      driver.vehicle = {};
-    }
+    driver.onboarding.documentsUploaded = missingList.length === 0;
 
-    // ✅ Update documentsUploaded flag
-    const allUploadedNow = requiredDocs.every(d => !!driver.documents[d]);
-    driver.vehicle.documentsUploaded = allUploadedNow;
-    driver.markModified('vehicle');
-
-    // ⏫ Update onboarding status
-    if (driver.onboarding.missingDocs.length === 0) {
+    // ⏫ Update onboarding status in one place
+    if (missingList.length === 0) {
       driver.onboarding.status = 'ready_for_review';
-    } else if (driver.onboarding.status === 'pending') {
+    } else if (!driver.onboarding.status || driver.onboarding.status === 'pending' || driver.onboarding.status === 'ready_for_review') {
       driver.onboarding.status = 'in_progress';
     }
+
+    driver.markModified('onboarding'); // ✅ mark parent as well
 
     await driver.save();
 
@@ -463,7 +455,7 @@ if (existing?.storageKey) {
       url,
       missingDocs: driver.onboarding.missingDocs,
       onboardingStatus: driver.onboarding.status,
-      documentsUploaded: driver.vehicle.documentsUploaded
+      documentsUploaded: driver.onboarding.documentsUploaded
     });
 
     // 📤 Respond
@@ -473,11 +465,11 @@ if (existing?.storageKey) {
       url,
       missingDocs: driver.onboarding.missingDocs,
       onboardingStatus: driver.onboarding.status,
-      documentsUploaded: driver.vehicle.documentsUploaded
+      documentsUploaded: driver.onboarding.documentsUploaded
     });
 
   } catch (err) {
-    console.error(err);
+    console.error('❌ uploadDocument error:', err);
     res.status(err.status || 500).json({
       error: err.status === 413 ? err.message : 'Failed to upload document',
     });
@@ -485,100 +477,112 @@ if (existing?.storageKey) {
 }
 
 
+// controllers/driverOnboardingController.js
+
+
 async function deleteDocument(req, res) {
   try {
-    console.log('🗑 [deleteDocument] Incoming params:', {
-      params: req.params,
-      body: req.body
-    });
+    const docType = (req.params.docType || req.body?.docType || '')
+      .toLowerCase()
+      .trim();
 
-    // 1. Load driver with full documents path
+    if (!docType) {
+      return res.status(400).json({
+        error: 'Missing document type',
+        errorCode: 'MISSING_DOC_TYPE'
+      });
+    }
+
     const driver = await Driver.findById(req.driverId)
-      .select('+documents +vehicle +onboarding')
+      .select('+onboarding')
       .exec();
 
     if (!driver) {
-      console.warn('❌ Driver not found for ID:', req.driverId);
-      return res.status(404).json({ error: 'Driver not found', errorCode: 'DRIVER_NOT_FOUND' });
+      return res.status(404).json({
+        error: 'Driver not found',
+        errorCode: 'DRIVER_NOT_FOUND'
+      });
     }
 
-    console.log('📄 Existing document keys:', Object.keys(driver.documents || {}));
-
-    // 2. Normalize docType
-    const docType = (req.params.docType || req.body.docType || '').toLowerCase().trim();
-    if (!docType) {
-      console.warn('⚠ No docType provided');
-      return res.status(400).json({ error: 'Missing document type', errorCode: 'MISSING_DOC_TYPE' });
+    if (!driver.onboarding?.documents?.[docType]) {
+      return res.status(404).json({
+        error: 'Document not found',
+        errorCode: 'DOC_NOT_FOUND'
+      });
     }
 
-    console.log('🔍 Looking for docType:', docType);
+    const existingDoc = driver.onboarding.documents[docType];
 
-    // 3. Check if doc exists
-    const existing = driver.documents?.[docType];
-    if (!existing) {
-      console.warn('⚠ Document not found in driver.documents for:', docType);
-      return res.status(404).json({ error: 'Document not found', errorCode: 'DOC_NOT_FOUND' });
-    }
-
-    console.log('✅ Found document entry:', existing);
-
-    // 4. Attempt storage removal
-    if (existing.storageKey) {
+    // 🗑 Remove the physical file if it exists
+    if (existingDoc.storageKey) {
       try {
-        await storageRemove(existing.storageKey);
-        console.log(`🗑 Removed from storage: ${existing.storageKey}`);
+        await storageRemove(existingDoc.storageKey);
+        console.log(`✅ Removed ${docType} from storage`);
       } catch (err) {
-        console.error(`⚠ Failed to remove from storage: ${existing.storageKey}`, err.message);
+        console.warn(`⚠ Failed to remove from storage: ${err.message}`);
       }
     }
 
-    // 5. Remove from DB object
-    delete driver.documents[docType];
-    driver.markModified('documents');
+    // ❌ Remove directly from the live Mongoose object
+    delete driver.onboarding.documents[docType];
+    driver.markModified('onboarding.documents');
 
-    // 6. Recompute flags
+    // 🔄 Recalculate missingDocs and flags
     const requiredDocs = ['aadhar', 'pan', 'dl', 'rc'];
-    driver.onboarding.missingDocs = requiredDocs.filter(d => !driver.documents[d]);
-    driver.vehicle.documentsUploaded = requiredDocs.every(d => !!driver.documents[d]);
-    driver.markModified('vehicle');
+    const missingList = requiredDocs.filter(
+      d => !driver.onboarding.documents[d]
+    );
 
+    driver.onboarding.missingDocs = {
+      missingDocs: missingList,
+      personalMissing: false,
+      vehicleMissing: false,
+      readyToSubmit: missingList.length === 0
+    };
+    driver.onboarding.documentsUploaded = missingList.length === 0;
+
+    // ⏫ Status adjustment
     if (
       driver.onboarding.status === 'ready_for_review' &&
-      !driver.vehicle.documentsUploaded
+      !driver.onboarding.documentsUploaded
     ) {
       driver.onboarding.status = 'in_progress';
     }
 
-    // 7. Save changes
-    await driver.save();
-    console.log('💾 Driver saved successfully');
+    driver.markModified('onboarding');
 
-    // 8. Emit event
+    await driver.save();
+
+    // 🛡 Guaranteed DB cleanup — $unset to drop the key at the Mongo level
+    await Driver.updateOne(
+      { _id: driver._id },
+      { $unset: { [`onboarding.documents.${docType}`]: '' } }
+    );
+
+    // 📢 Socket notification
     ioEmit(req, driver._id, 'onboarding:doc:deleted', {
       docType,
       missingDocs: driver.onboarding.missingDocs,
       onboardingStatus: driver.onboarding.status,
-      documentsUploaded: driver.vehicle.documentsUploaded
+      documentsUploaded: driver.onboarding.documentsUploaded
     });
 
-    return res.json({
+    // 📤 Respond with updated onboarding state
+    res.json({
       success: true,
       docType,
       missingDocs: driver.onboarding.missingDocs,
       onboardingStatus: driver.onboarding.status,
-      documentsUploaded: driver.vehicle.documentsUploaded
+      documentsUploaded: driver.onboarding.documentsUploaded
     });
-
   } catch (err) {
-    console.error('❌ deleteDocument unexpected error:', err);
-    return res.status(500).json({ error: 'Failed to delete document', errorCode: 'DELETE_DOC_ERROR' });
+    console.error('❌ deleteDocument error:', err);
+    res.status(500).json({
+      error: 'Failed to delete document',
+      errorCode: 'DELETE_DOC_ERROR'
+    });
   }
 }
-
-
-
-
-
 
 
 
