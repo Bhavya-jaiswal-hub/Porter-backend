@@ -14,12 +14,12 @@ async function listSubmissions(req, res) {
   }
 }
 
-// ✅ NEW: Get full application details for a single driver
+// Get full application details for a single driver
 async function getDriverApplication(req, res) {
   try {
     const { driverId } = req.params;
     const driver = await Driver.findById(driverId)
-      .select('-password') // hide sensitive auth data
+      .select('-password')
       .lean();
 
     if (!driver) {
@@ -33,33 +33,38 @@ async function getDriverApplication(req, res) {
   }
 }
 
-// Approve driver onboarding (enum-safe)
+// Approve driver onboarding
 async function approveApplication(req, res) {
   try {
     const { driverId } = req.params;
     const driver = await Driver.findById(driverId);
 
     if (!driver) return res.status(404).json({ error: 'Driver not found' });
+
     if (driver.onboarding.status !== 'under_review') {
       return res.status(400).json({ error: 'Driver is not under review' });
     }
 
-    // ✅ Enum safety check
-    if (driver.schema.path('onboarding.status').enumValues.includes('approved') === false) {
+    // Enum safety
+    if (!driver.schema.path('onboarding.status').enumValues.includes('approved')) {
       return res.status(500).json({
-        error: "'approved' is not a valid status in schema enum — please update Driver schema."
+        error: "'approved' is not in schema enum — update your Driver schema."
       });
     }
 
     driver.onboarding.status = 'approved';
     driver.onboarding.approvedAt = new Date();
     driver.markModified('onboarding');
-
     await driver.save();
 
-    ioEmit(req, driver._id, 'onboarding:approved', {
-      approvedAt: driver.onboarding.approvedAt
-    });
+    // Emit over socket.io
+    try {
+      req.io.to(driver._id.toString()).emit('onboarding:approved', {
+        approvedAt: driver.onboarding.approvedAt
+      });
+    } catch (emitErr) {
+      console.warn('⚠️ Socket emit failed (approveApplication):', emitErr.message);
+    }
 
     res.json({
       success: true,
@@ -72,23 +77,23 @@ async function approveApplication(req, res) {
   }
 }
 
-// Reject driver onboarding (enum-safe)
+// Reject driver onboarding
 async function rejectApplication(req, res) {
   try {
     const { driverId } = req.params;
     const { reason } = req.body;
-
     const driver = await Driver.findById(driverId);
 
     if (!driver) return res.status(404).json({ error: 'Driver not found' });
+
     if (driver.onboarding.status !== 'under_review') {
       return res.status(400).json({ error: 'Driver is not under review' });
     }
 
-    // ✅ Enum safety check
-    if (driver.schema.path('onboarding.status').enumValues.includes('rejected') === false) {
+    // Enum safety
+    if (!driver.schema.path('onboarding.status').enumValues.includes('rejected')) {
       return res.status(500).json({
-        error: "'rejected' is not a valid status in schema enum — please update Driver schema."
+        error: "'rejected' is not in schema enum — update your Driver schema."
       });
     }
 
@@ -98,13 +103,17 @@ async function rejectApplication(req, res) {
       driver.onboarding.rejectionReason = reason.trim();
     }
     driver.markModified('onboarding');
-
     await driver.save();
 
-    ioEmit(req, driver._id, 'onboarding:rejected', {
-      rejectedAt: driver.onboarding.rejectedAt,
-      reason: driver.onboarding.rejectionReason || null
-    });
+    // Emit over socket.io
+    try {
+      req.io.to(driver._id.toString()).emit('onboarding:rejected', {
+        rejectedAt: driver.onboarding.rejectedAt,
+        reason: driver.onboarding.rejectionReason || null
+      });
+    } catch (emitErr) {
+      console.warn('⚠️ Socket emit failed (rejectApplication):', emitErr.message);
+    }
 
     res.json({
       success: true,
@@ -120,7 +129,7 @@ async function rejectApplication(req, res) {
 
 module.exports = {
   listSubmissions,
-  getDriverApplication, // ✅ export new function
+  getDriverApplication,
   approveApplication,
   rejectApplication
 };
