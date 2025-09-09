@@ -90,8 +90,27 @@ async function sendOtp(req, res) {
       from: process.env.EMAIL_USER,
       to: email,
       subject: 'Your OTP Code',
-      html: `<p>Your OTP is <b>${otp}</b>. It expires in 5 minutes.</p>`
-    });
+       html: `
+  <div style="font-family: Arial, sans-serif; background-color: #f4f4f4; padding: 30px;">
+    <div style="max-width: 500px; margin: auto; background: white; border-radius: 10px; overflow: hidden; box-shadow: 0 4px 10px rgba(0,0,0,0.1);">
+      <div style="background-color: #6C63FF; padding: 20px; text-align: center;">
+        <h1 style="color: white; margin: 0; font-size: 24px;">🚚 Delivery King</h1>
+      </div>
+      <div style="padding: 30px; text-align: center;">
+        <p style="font-size: 16px; color: #333; margin-bottom: 20px;">
+          Use the OTP below to complete your registration. This code will expire in 5 minutes.
+        </p>
+        <div style="display: inline-block; background-color: #f0f0f0; padding: 15px 25px; border-radius: 8px; margin-bottom: 20px;">
+          <span style="font-size: 32px; font-weight: bold; letter-spacing: 4px; color: #6C63FF;">${otp}</span>
+        </div>
+        <p style="font-size: 14px; color: #777;">
+          If you didn’t request this, you can safely ignore this email.
+        </p>
+      </div>
+    </div>
+  </div>
+  `
+});
 
     return res.json({ message: 'OTP sent successfully' });
   } catch (err) {
