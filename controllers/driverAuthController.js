@@ -1,7 +1,8 @@
-// controllers/driverAuthController.js
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const Driver = require('../models/Driver');
+const Otp = require('../models/Otp'); // Schema: { email, name, password, phone, vehicleType, otp, expiresAt }
+const transporter = require('../utils/mailer'); // Nodemailer transporter
 
 // Config
 const ACCESS_TTL = process.env.ACCESS_TTL || '1d';
@@ -45,7 +46,105 @@ function clearRefreshCookie(res) {
   });
 }
 
-// Controllers
+// ---------------- OTP Controllers ----------------
+
+// POST /api/driver/auth/send-otp
+async function sendOtp(req, res) {
+  try {
+    let { name, email, password, phone, vehicleType } = req.body || {};
+    if (!name || !email || !password || !vehicleType) {
+      return res.status(400).json({ message: 'name, email, password, vehicleType are required' });
+    }
+
+    email = String(email).toLowerCase().trim();
+
+    // Check if already registered
+    const exists = await Driver.findOne({ email }).lean();
+    if (exists) {
+      return res.status(409).json({ message: 'Email already registered' });
+    }
+
+    // Generate OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    // Hash password before storing
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Store OTP + registration details in DB with expiry (5 min)
+    await Otp.findOneAndUpdate(
+      { email },
+      {
+        name: name.trim(),
+        email,
+        password: hashedPassword,
+        phone: phone ? String(phone).trim() : null,
+        vehicleType: String(vehicleType).trim().toLowerCase(),
+        otp,
+        expiresAt: Date.now() + 5 * 60 * 1000
+      },
+      { upsert: true, new: true }
+    );
+
+    // Send OTP email
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: email,
+      subject: 'Your OTP Code',
+      html: `<p>Your OTP is <b>${otp}</b>. It expires in 5 minutes.</p>`
+    });
+
+    return res.json({ message: 'OTP sent successfully' });
+  } catch (err) {
+    console.error('sendOtp error:', err);
+    return res.status(500).json({ message: 'Failed to send OTP', error: err.message });
+  }
+}
+
+// POST /api/driver/auth/verify-otp
+// POST /api/driver/auth/verify-otp
+async function verifyOtp(req, res) {
+  try {
+    let { email, otp } = req.body || {};
+    if (!email || !otp) {
+      return res.status(400).json({ message: 'Email and OTP are required' });
+    }
+
+    email = String(email).toLowerCase().trim();
+
+    // Check OTP record
+    const record = await Otp.findOne({ email, otp });
+    console.log('OTP record found:', record);
+
+    if (!record) {
+      return res.status(400).json({ message: 'Invalid OTP' });
+    }
+    if (record.expiresAt < Date.now()) {
+      return res.status(400).json({ message: 'OTP expired' });
+    }
+
+    // Create driver with schema defaults
+    const driver = await Driver.create({
+      name: record.name,
+      email: record.email,
+      password: record.password, // already hashed
+      phone: record.phone,
+      vehicleType: record.vehicleType
+    });
+
+    // Delete OTP record
+    await Otp.deleteOne({ email });
+
+    return res.status(201).json({ message: 'Registration successful', id: driver._id });
+  } catch (err) {
+    console.error('verifyOtp error:', err);
+    return res.status(500).json({ message: 'OTP verification failed', error: err.message });
+  }
+}
+
+   
+
+// ---------------- Existing Controllers ----------------
+
 async function register(req, res) {
   try {
     let { name, email, password, phone, vehicleType } = req.body || {};
@@ -74,7 +173,6 @@ async function register(req, res) {
 
     return res.status(201).json({ id: driver._id });
   } catch (err) {
-    // Handle duplicate key or validation errors cleanly
     if (err.code === 11000) {
       return res.status(409).json({ message: 'Email already registered' });
     }
@@ -120,7 +218,6 @@ async function refresh(req, res) {
       return res.status(401).json({ message: 'Invalid refresh token' });
     }
 
-    // Optionally re-fetch to ensure status/role are current
     const driver = await Driver.findById(decoded.sub).select('onboarding');
     if (!driver) return res.status(401).json({ message: 'Invalid session' });
 
@@ -168,6 +265,8 @@ async function logout(_req, res) {
 }
 
 module.exports = {
+  sendOtp,
+  verifyOtp,
   register,
   login,
   refresh,
