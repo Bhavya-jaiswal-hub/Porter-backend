@@ -1,7 +1,7 @@
 // services/tokenService.js
 const jwt = require('jsonwebtoken');
 
-const ACCESS_TTL = process.env.ACCESS_TTL || '15m';
+const ACCESS_TTL = process.env.ACCESS_TTL || '1d';
 const REFRESH_TTL = process.env.REFRESH_TTL || '7d';
 
 /**
@@ -15,6 +15,8 @@ function buildPayload(data) {
     ...data.extra    // optional extra claims
   };
 }
+                                                                                                                     
+
 
 /**
  * Sign an access token

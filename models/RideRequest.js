@@ -1,5 +1,4 @@
 const mongoose = require('mongoose');
-
 const { Schema, Types } = mongoose;
 
 const locationSchema = new Schema(
@@ -22,12 +21,11 @@ const rideRequestSchema = new Schema(
 
     vehicleType: {
       type: String,
-      // Canonicalize to lowercase for consistent matching with drivers
       set: (v) => (typeof v === 'string' ? v.trim().toLowerCase() : v),
       enum: [
         'bike',
-        'two-wheeler',     // will accept "Two-Wheeler" from client, stored as lowercase
-        'threewheeler',    // will accept "threeWheeler" from client, stored as lowercase
+        'two-wheeler',
+        'threewheeler',
         'truck',
         'minitruck',
         'tempo',
@@ -50,6 +48,19 @@ const rideRequestSchema = new Schema(
       },
     },
 
+    // ✅ GeoJSON point for geospatial queries
+    pickupPoint: {
+      type: {
+        type: String,
+        enum: ['Point'],
+        default: 'Point',
+      },
+      coordinates: {
+        type: [Number], // [lng, lat]
+        default: undefined, // prevents empty array indexing issues
+      },
+    },
+
     dropLocation: {
       type: locationSchema,
       required: true,
@@ -68,14 +79,13 @@ const rideRequestSchema = new Schema(
     userId: {
       type: Schema.Types.ObjectId,
       ref: 'User',
-      default: null, // guests supported
+      default: null,
     },
 
     driverId: {
       type: Schema.Types.ObjectId,
       ref: 'Driver',
       default: null,
-      // Gracefully handle legacy non-ObjectId values like "DRIVER123"
       set: (v) => (Types.ObjectId.isValid(v) ? v : null),
     },
 
@@ -85,20 +95,45 @@ const rideRequestSchema = new Schema(
       min: [0, 'fareEstimate must be >= 0'],
     },
 
+    userSocketId: {
+      type: String,
+      default: null,
+    },
+
     status: {
       type: String,
-      enum: ['searching', 'accepted', 'cancelled', 'completed'],
-      default: 'searching',
+      enum: [
+        'pending',
+        'searching',
+        'accepted',
+        'pickup_complete',
+        'in_progress',
+        'cancelled',
+        'completed',
+      ],
+      default: 'pending',
       index: true,
     },
   },
   {
-    timestamps: true, // adds createdAt and updatedAt
+    timestamps: true,
   }
 );
 
-// Index for fast lookups by bookingId
+// ✅ Keep pickupPoint in sync with pickupLocation
+rideRequestSchema.pre('save', function (next) {
+  if (this.pickupLocation?.lat && this.pickupLocation?.lng) {
+    this.pickupPoint = {
+      type: 'Point',
+      coordinates: [this.pickupLocation.lng, this.pickupLocation.lat],
+    };
+  }
+  next();
+});
+
+// ✅ Indexes
 rideRequestSchema.index({ bookingId: 1 }, { unique: true });
+rideRequestSchema.index({ pickupPoint: '2dsphere' }); // correct 2dsphere index
 
 // Optional: compact JSON output
 rideRequestSchema.set('toJSON', {

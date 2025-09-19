@@ -119,7 +119,7 @@ async function sendOtp(req, res) {
   }
 }
 
-// POST /api/driver/auth/verify-otp
+
 // POST /api/driver/auth/verify-otp
 async function verifyOtp(req, res) {
   try {

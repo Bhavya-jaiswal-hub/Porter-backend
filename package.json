@@ -21,9 +21,11 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.16.1",
     "multer": "^2.0.2",
+    "node-fetch": "^3.3.2",
     "nodemailer": "^7.0.5",
     "razorpay": "^2.9.6",
     "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1",
     "zod": "^4.0.17"
   },
   "devDependencies": {
