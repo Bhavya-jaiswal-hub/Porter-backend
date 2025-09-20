@@ -158,13 +158,14 @@ exports.getRideByBookingId = async (req, res) => {
 
 exports.getNearbyPendingRides = async (req, res) => {
   try {
-    const { lat, lng, radius } = req.query;
+    const { lat, lng } = req.query;
 
     if (!lat || !lng) {
       return res.status(400).json({ error: "lat and lng query parameters are required" });
     }
 
-    const searchRadius = radius ? parseFloat(radius) * 1000 : 5000;
+    // Fixed radius = 3 km (in meters)
+    const searchRadius = 3000;
 
     const rides = await RideRequest.find({
       status: 'pending',
@@ -181,11 +182,10 @@ exports.getNearbyPendingRides = async (req, res) => {
       .sort({ createdAt: -1 })
       .populate('userId', 'name email phone');
 
-    // ✅ Always return 200 with an array
+    // Always return 200 with an array
     return res.status(200).json(rides || []);
   } catch (error) {
-    console.error('❌ Error fetching nearby pending rides:', error);
+    console.error('❌ Error fetching nearby pending rides:', error.message);
     return res.status(500).json({ error: 'Failed to fetch nearby rides' });
   }
 };
-  

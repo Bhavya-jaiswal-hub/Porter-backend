@@ -106,6 +106,7 @@ const rideRequestSchema = new Schema(
         'pending',
         'searching',
         'accepted',
+        'on_the_way',
         'pickup_complete',
         'in_progress',
         'cancelled',
